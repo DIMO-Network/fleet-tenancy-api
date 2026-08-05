@@ -1,0 +1,22 @@
+ENVIRONMENT: local
+LOG_LEVEL: debug
+SERVICE_NAME: fleet-tenancy-api
+
+API_PORT: 8080
+MONITORING_PORT: 8888
+
+DB_USER: dimo
+DB_PASSWORD: dimo
+DB_HOST: localhost
+DB_PORT: 5432
+DB_NAME: fleet_tenancy_api
+DB_SSL_MODE: disable
+DB_MAX_OPEN_CONNECTIONS: 10
+DB_MAX_IDLE_CONNECTIONS: 5
+
+# DIMO JWKS used to verify both user JWTs and developer-license JWTs.
+JWT_KEY_SET_URL: https://auth.dimo.zone/keys
+
+# AES-256-GCM key for tenant credentials at rest. The service refuses to start
+# outside local if this is empty — an unset key silently degrades to sha256("").
+TENANT_SECRET_ENC_KEY: ""

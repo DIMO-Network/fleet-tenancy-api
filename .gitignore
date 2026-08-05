@@ -1,0 +1,20 @@
+# Build output
+/target
+/bin
+fleet-tenancy-api
+
+# Local config — settings.sample.yaml is the committed template
+settings.yaml
+
+# Personal Claude notes; CLAUDE.md itself is committed (it imports AGENTS.md)
+CLAUDE.local.md
+.claude/settings.local.json
+
+.DS_Store
+.idea
+
+# --- TEMPORARY ---
+# The operator-tenancy design set is held back from this public repo until the
+# weaknesses it documents are fixed (fleet-group id collision; fleet-lite
+# tenant-credential encryption). Remove this block to publish them.
+/docs/operator-tenancy/
