@@ -1,7 +1,8 @@
 # Build output
 /target
 /bin
-fleet-tenancy-api
+# Anchored: an unanchored name would also match the cmd/fleet-tenancy-api/ dir
+/fleet-tenancy-api
 
 # Local config — settings.sample.yaml is the committed template
 settings.yaml
