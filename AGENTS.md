@@ -52,6 +52,12 @@ models, `stretchr/testify`, `go.uber.org/mock`, testcontainers-go for
 DB-dependent tests. Timestamps are `created_at` / `updated_at`
 `TIMESTAMPTZ NOT NULL DEFAULT NOW()`. Users are identified by wallet, not user id.
 
+## Start here
+
+[`docs/HANDOFF.md`](docs/HANDOFF.md) — current state, what to do next, and the
+traps that have already caused one production incident. Read it before touching
+anything.
+
 ## Design docs
 
 Gitignored for now — they document unresolved weaknesses in the systems being
