@@ -14,10 +14,52 @@ decisions are locked — see `README.md` in the design set.
 
 ## Do these first
 
-### 1. Run fleet-lite's group-attestation republish — NOT DONE
+### 1. Flip `DROP_FOREIGN_TENANT_GROUPS` — now unblocked, still NOT DONE
 
-Then, and only then, flip `DROP_FOREIGN_TENANT_GROUPS`. Never the reverse: see
-the trap below, which this deploy did not change.
+The republish it was gated on is done and verified (below). Per
+`07-r1-group-id-migration.md` §6 this must not ship in the same release as the
+republish, and the republish has now landed in its own release, so the gate is
+satisfied.
+
+### 2. Fix the cronjobs' linkerd annotation — a live production bug
+
+**The nightly `import-group-attestations` cronjob has been a silent no-op**, and
+this is not caused by anything in this programme — it predates it.
+
+The chart's cronjobs set `linkerd.io/inject: disabled`, correctly, because an
+injected proxy outlives the main container and the job would never complete. But
+**identity-api authorizes on mesh identity and returns 403 to an unmeshed
+caller**. So `GetTenantByID`'s developer-license lookup fails, `DIMORedirectURI`
+is never set, the auth provider falls back to the unregistered default
+`https://fleets.dimo.co/login.html`, and every developer-JWT call dies with
+`Unregistered redirect_uri`. `import-group-attestations` logs those at **debug**
+(prod runs at info) and returns `ExitSuccess` regardless — so the job goes green
+nightly while doing nothing.
+
+Measured, same image and secret, dry-run both ways:
+
+| | unmeshed (as the cronjob runs) | meshed |
+|---|---|---|
+| duration | 18s | 243s |
+| license plates it would cache | 0 | **22** |
+| VINs it would cache | 0 | **17** |
+
+The fix is to mesh the cronjobs and shut the proxy down explicitly, which is what
+the republish Job did:
+
+```sh
+/fleet-lite-app <subcommand>
+code=$?
+wget -q -O- --post-data='' http://localhost:4191/shutdown >/dev/null 2>&1 || true
+exit $code
+```
+
+busybox `wget` is in the image and the proxy admin server is on `:4191`. Note
+this is a **chart** change, so ArgoCD auto-syncs it from `main` — see the trap
+below. It needs no new image, so that gap is harmless here.
+
+Worth fixing `import-group-attestations` to exit non-zero on a total failure
+while you are in there. A job that cannot do its work should not report success.
 
 ## Done on 2026-08-06
 
@@ -79,6 +121,35 @@ the dry-run aborts before writing anything if even one does not.
 Self-serve tenants are `0x0065fa40…`, `Fresh Coast Garage`, `My Test Fleet` and
 `TEST`.
 
+### The group-attestation republish — DONE and VERIFIED
+
+R1 §5 specifies a `republish-group-attestations` CLI, but **it had never been
+built**, so the rollout's step 4 had no tool to run. Written, reviewed and
+shipped as `fleet-lite-app#100`, released `v0.6.8` (`29a4619`), then run as a
+one-off Job.
+
+Result: **287 published, 0 failed, 0 skipped**, and the published set is an
+**exact match** for the 287 distinct `(tenant, vehicle)` pairs in
+`vehicle_fleet_groups` — verified by diffing the job's per-vehicle log against
+the database, not by comparing counts. 285 Kaufmann + 2 TEST.
+
+That is §6's verification gate: every grouped vehicle now carries fleet-lite's
+own assertion, so enforcing tenant-matching can no longer strip one.
+
+**The first attempt failed completely — 0 of 287 — and the reason is the trap
+above.** The Job initially copied the chart's `linkerd.io/inject: disabled`, hit
+the identity-api 403, and died on `Unregistered redirect_uri` for every vehicle.
+Nothing partial was published, so a retry was clean. Anyone writing another job
+against this app needs to mesh it.
+
+Two things that shaped the command, both worth keeping if it is ever rewritten:
+
+- It **skips rather than asserts empty** when a vehicle's groups vanish between
+  the query and the publish. Asserting "in no groups" on a stale read would
+  retract a real membership — the exact failure the republish exists to prevent.
+- Skips and failures make it **exit non-zero**. A partial republish is not a
+  success, because each unpublished vehicle is one the foreign-drop then strips.
+
 Two notes for the real run:
 
 - The dry-run used a **throwaway** `TENANT_SECRET_ENC_KEY`, passed by env and
@@ -125,17 +196,29 @@ and both services logged **zero errors** in the ten minutes after.
 
 `fleet-lite-app#98` and various dependabot PRs are unrelated.
 
-**Still outstanding from R1:** fleet-lite's group-attestation republish has not
-been run. Until it is, `DROP_FOREIGN_TENANT_GROUPS` must stay `false` — see the
-trap below, which is unchanged by this deploy.
+**R1 is now complete through step 5.** The republish has run and been verified,
+so `DROP_FOREIGN_TENANT_GROUPS` is unblocked — it is still `false`, and flipping
+it is the next action. The trap below explains what it protects against; read it
+before flipping.
 
 ## Traps — things that will bite you
 
-**`DROP_FOREIGN_TENANT_GROUPS` must stay `false`.** Enabling it before
-fleet-lite republishes its own group attestations deletes 370 of 378 group
-memberships. 0 of 287 grouped vehicles have ever been edited locally, so
-fleet-lite has never published a group CE — the entire production group
-structure is kaufmann's assertions, and `removalAllowed` is open on all 287.
+**`DROP_FOREIGN_TENANT_GROUPS` — the republish gate, now satisfied.** Enabling it
+*before* fleet-lite republished its own group attestations would have deleted 370
+of 378 group memberships: 0 of 287 grouped vehicles had ever been edited locally,
+so fleet-lite had never published a group CE, the entire production group
+structure was kaufmann's assertions, and `removalAllowed` was open on all 287.
+
+The republish ran on 2026-08-06 and covers all 287, so the flag is now safe to
+enable. **It is still `false`.** If you ever re-derive this situation — a new
+tenant, a restored database, a fleet-lite install that has not republished — the
+original rule applies again: republish first, verify the set matches, then flip.
+
+**A meshed pod is required to reach identity-api.** It returns 403 to unmeshed
+callers, which silently costs you `DIMORedirectURI` and turns every
+developer-JWT call into `Unregistered redirect_uri`. This is why the cronjobs
+are broken (see "Do these first" §2) and why the republish Job is deliberately
+meshed with an explicit proxy shutdown.
 
 **Chart changes deploy independently of image changes.** ArgoCD auto-syncs from
 `main` (`automated.enabled=true`) while prod images build on `v*` **tags**. That
@@ -175,8 +258,8 @@ tests over the ambiguous cases.
 
 ## Next, in order
 
-1. Run fleet-lite's group-attestation republish, then flip
-   `DROP_FOREIGN_TENANT_GROUPS` — in that order, never the reverse
+1. Flip `DROP_FOREIGN_TENANT_GROUPS` (the republish gate is satisfied), and fix
+   the cronjob meshing — both above
 2. `/v1/resolve/client-id/{clientId}` + the developer-license middleware —
    **`/v1` is currently unauthenticated**, fine locally, must land before deploy
 3. The DIMO token minter (`GET /v1/tenants/{id}/dimo-token`), so credentials
