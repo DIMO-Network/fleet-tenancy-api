@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"flag"
 	"os"
+	"strings"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/service"
@@ -25,6 +26,13 @@ import (
 //     company with the same dimo_client_id, so its API key is the same secret —
 //     copying it too would duplicate a credential and violate the unique index
 //     on tenant_credentials.dimo_client_id.
+//
+//   - fleet-lite tenants with NO kaufmann counterpart migrate as SELF-SERVE
+//     tenants: kind='customer', no parent, their own credentials, implicit
+//     entitlements. They signed up through fleet-lite's own onboarding with
+//     their own developer license, and the design has always carried them —
+//     dropping them would lock out real fleets (52 vehicles across four tenants
+//     as of 2026-08-05, one of them logged in that day).
 //
 //   - Users and memberships come from BOTH. fleet-lite's tenant_users are the
 //     customer's own staff and have no counterpart in access_tenants; dropping
@@ -150,24 +158,47 @@ func (p *backfillCmd) Execute(ctx context.Context, _ *flag.FlagSet, _ ...interfa
 		p.logger.Err(err).Msg("check fleet-lite tenants")
 		return subcommands.ExitFailure
 	}
-	for _, s := range stranded {
-		p.logger.Warn().Str("tenant_id", s.id).Str("name", s.name).
-			Msg("fleet-lite tenant has no counterpart in kaufmann — its members will have NO ACCESS after cutover")
+	// Prepare the self-serve tenants: same verify-before-write discipline, using
+	// fleet-lite's encryption key.
+	preparedSelfServe := make([]reKeyed, 0, len(stranded))
+	for _, sv := range stranded {
+		r := reKeyed{t: srcTenant{id: sv.id, name: sv.name,
+			dimoClientID: sv.dimoClientID, dimoSecretEnc: sv.dimoSecretEnc}}
+		var cerr error
+		if r.apiKeyEnc, cerr = recrypt(fKey, p.settings.TenantSecretEncKey, sv.dimoSecretEnc); cerr != nil {
+			p.logger.Error().Str("tenant", sv.name).Err(cerr).
+				Msg("could not decrypt fleet-lite DIMO secret — aborting, nothing written")
+			return subcommands.ExitFailure
+		}
+		preparedSelfServe = append(preparedSelfServe, r)
+		p.logger.Info().Str("tenant_id", sv.id).Str("name", sv.name).
+			Msg("fleet-lite tenant with no kaufmann counterpart — migrating as self-serve")
+	}
+
+	// tenant_credentials.dimo_client_id is uniquely indexed. Two tenants sharing
+	// a client id would fail mid-write, so catch it here instead.
+	seenClient := map[string]string{}
+	for _, r := range append(append([]reKeyed{}, prepared...), preparedSelfServe...) {
+		if !r.t.dimoClientID.Valid || r.t.dimoClientID.String == "" {
+			continue
+		}
+		k := strings.ToLower(r.t.dimoClientID.String)
+		if other, dup := seenClient[k]; dup {
+			p.logger.Error().Str("tenant", r.t.name).Str("conflicts_with", other).
+				Msg("two tenants share a DIMO client id — refusing, one credential cannot belong to two tenants")
+			return subcommands.ExitFailure
+		}
+		seenClient[k] = r.t.name
 	}
 
 	p.logger.Info().
 		Int("kaufmann_tenants", len(tenants)).
-		Int("stranded_fleetlite_tenants", len(stranded)).
+		Int("selfserve_fleetlite_tenants", len(preparedSelfServe)).
 		Bool("dry_run", p.dryRun).
 		Msg("verification complete")
 
 	if p.dryRun {
 		return subcommands.ExitSuccess
-	}
-	if len(stranded) > 0 {
-		p.logger.Error().Msg("refusing to write while fleet-lite tenants would be stranded; " +
-			"migrate or retire them first, or re-run with them resolved")
-		return subcommands.ExitFailure
 	}
 
 	// ---- Pass 2: write, one transaction ----
@@ -205,6 +236,31 @@ func (p *backfillCmd) Execute(ctx context.Context, _ *flag.FlagSet, _ ...interfa
 		}
 	}
 
+	for _, r := range preparedSelfServe {
+		// No parent, own credentials, implicit entitlements: their fleet is
+		// whatever their own developer license is privileged on, exactly as
+		// fleet-lite works for them today.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO tenants (id, name, kind, entitlement_mode, fleet_lite_enabled)
+			VALUES ($1, $2, 'customer', 'implicit', TRUE)
+			ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW()`,
+			r.t.id, r.t.name); err != nil {
+			p.logger.Err(err).Str("tenant", r.t.name).Msg("upsert self-serve tenant")
+			return subcommands.ExitFailure
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO tenant_credentials (tenant_id, dimo_client_id, dimo_api_key_enc)
+			VALUES ($1, NULLIF($2,''), NULLIF($3,''))
+			ON CONFLICT (tenant_id) DO UPDATE SET
+				dimo_client_id = EXCLUDED.dimo_client_id,
+				dimo_api_key_enc = EXCLUDED.dimo_api_key_enc,
+				updated_at = NOW()`,
+			r.t.id, r.t.dimoClientID.String, r.apiKeyEnc); err != nil {
+			p.logger.Err(err).Str("tenant", r.t.name).Msg("upsert self-serve credentials")
+			return subcommands.ExitFailure
+		}
+	}
+
 	kUsers, kMembers, err := copyKaufmannMembers(ctx, kdb, tx)
 	if err != nil {
 		p.logger.Err(err).Msg("copy kaufmann members")
@@ -222,11 +278,11 @@ func (p *backfillCmd) Execute(ctx context.Context, _ *flag.FlagSet, _ ...interfa
 	}
 
 	p.logger.Info().
-		Int("tenants", len(prepared)).
+		Int("operator_tenants", len(prepared)).
+		Int("selfserve_tenants", len(preparedSelfServe)).
 		Int("users", kUsers+fUsers).
 		Int("memberships", kMembers+fMembers).
 		Msg("backfill complete")
-	_ = fKey // fleet-lite credentials are deliberately not copied; see the type comment.
 	return subcommands.ExitSuccess
 }
 
@@ -264,7 +320,11 @@ func readKaufmannTenants(ctx context.Context, kdb *sql.DB) ([]srcTenant, error) 
 	return out, rows.Err()
 }
 
-type fleetLiteTenant struct{ id, name string }
+type fleetLiteTenant struct {
+	id, name      string
+	dimoClientID  sql.NullString
+	dimoSecretEnc sql.NullString
+}
 
 // strandedFleetLiteTenants returns fleet-lite tenants whose uuid does not appear
 // among the kaufmann tenants being migrated. After the uuid-unification
@@ -275,7 +335,8 @@ func strandedFleetLiteTenants(ctx context.Context, fdb *sql.DB, kt []srcTenant) 
 	for _, t := range kt {
 		known[t.id] = true
 	}
-	rows, err := fdb.QueryContext(ctx, `SELECT id, name FROM tenants ORDER BY name`)
+	rows, err := fdb.QueryContext(ctx,
+		`SELECT id, name, dimo_client_id, dimo_api_key_enc FROM tenants ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +344,7 @@ func strandedFleetLiteTenants(ctx context.Context, fdb *sql.DB, kt []srcTenant) 
 	var out []fleetLiteTenant
 	for rows.Next() {
 		var t fleetLiteTenant
-		if err := rows.Scan(&t.id, &t.name); err != nil {
+		if err := rows.Scan(&t.id, &t.name, &t.dimoClientID, &t.dimoSecretEnc); err != nil {
 			return nil, err
 		}
 		if !known[t.id] {
