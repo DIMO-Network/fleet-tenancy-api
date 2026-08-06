@@ -14,10 +14,10 @@ decisions are locked — see `README.md` in the design set.
 
 ## Do these first
 
-### 1. A clean `backfill -dry-run` against prod — NOT DONE
+### 1. Run fleet-lite's group-attestation republish — NOT DONE
 
-Both blockers below are cleared, so the dry-run is now the next real step. It
-was not run on 2026-08-06 because the SSH tunnel dropped again mid-session.
+Then, and only then, flip `DROP_FOREIGN_TENANT_GROUPS`. Never the reverse: see
+the trap below, which this deploy did not change.
 
 ## Done on 2026-08-06
 
@@ -40,6 +40,56 @@ Two corrections to what the previous note claimed:
   empty ids in the duplicate check (`backfill.go`, the `seenClient` loop) and
   writes `NULLIF($2,'')`, so they land as NULL and cannot collide under the
   unique index. No action needed, but don't "fix" it into a real duplicate.
+
+### "DIMO Build" vs "TEST" — a third duplicate, CLEARED
+
+The first dry-run surfaced one the earlier survey missed, because it **crosses
+databases** and so no single-database query would show it. kaufmann's
+`DIMO Build` and fleet-lite's `TEST` both held
+`0xE40AEc6f45e854b2E0cDa20624732F16AA029Ae7`, and both belong to the same wallet
+`0xCAA591fA19a86762D1ed1B98b2057Ee233240b65` — one person's developer license
+used to create a tenant in each system.
+
+| | kaufmann `DIMO Build` | fleet-lite `TEST` |
+|---|---|---|
+| vehicles / groups | 0 / 0 | 6 / 2 |
+| last activity | 2026-05-08 | login 2026-07-18, updated 2026-08-05 |
+
+Cleared on kaufmann's side, mirroring the Conexo2 decision — the empty, stale
+holder gives it up, and the side actually running vehicles keeps it. `TEST` now
+migrates as a self-serve tenant holding the credential.
+
+**The lesson for anyone auditing this again:** duplicate-credential checks must
+run across both databases at once. Two more single-database sweeps would not
+have found this one.
+
+### A clean `backfill -dry-run` against prod — PASSED
+
+Exit 0, after the above was cleared:
+
+```
+kaufmann_tenants=11  selfserve_fleetlite_tenants=4  dry_run=true
+  "verification complete"
+```
+
+15 distinct tenants, which reconciles with the 16 counted across both systems
+minus the single Kaufmann overlap. Every credential in scope decrypted cleanly —
+the dry-run aborts before writing anything if even one does not.
+
+Self-serve tenants are `0x0065fa40…`, `Fresh Coast Garage`, `My Test Fleet` and
+`TEST`.
+
+Two notes for the real run:
+
+- The dry-run used a **throwaway** `TENANT_SECRET_ENC_KEY`, passed by env and
+  deliberately not written to `settings.yaml`. Nothing is written on a dry-run,
+  so it does not matter there — but the real run must use this service's actual
+  production key, which does not exist yet because the service is not deployed.
+  Do not reuse the throwaway.
+- Wallet casing differs between the sources (`0xCAA591fA…` in kaufmann,
+  `0xcaa591fa…` in fleet-lite). This is handled: `upsertUser` and both
+  membership inserts all normalize through `common.HexToAddress(w).Hex()`, so
+  one person yields one row. Worth re-checking if that code is ever touched.
 
 ### R1 PRs — merged and deployed
 
@@ -125,14 +175,13 @@ tests over the ambiguous cases.
 
 ## Next, in order
 
-1. A clean `backfill -dry-run` against prod
-2. Run fleet-lite's group-attestation republish, then flip
+1. Run fleet-lite's group-attestation republish, then flip
    `DROP_FOREIGN_TENANT_GROUPS` — in that order, never the reverse
-3. `/v1/resolve/client-id/{clientId}` + the developer-license middleware —
+2. `/v1/resolve/client-id/{clientId}` + the developer-license middleware —
    **`/v1` is currently unauthenticated**, fine locally, must land before deploy
-4. The DIMO token minter (`GET /v1/tenants/{id}/dimo-token`), so credentials
+3. The DIMO token minter (`GET /v1/tenants/{id}/dimo-token`), so credentials
    never leave this service
-5. `/user/v1` management surface, then the b2b operator console
+4. `/user/v1` management surface, then the b2b operator console
 
 ## Running things
 
