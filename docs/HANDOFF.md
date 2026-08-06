@@ -21,45 +21,8 @@ The republish it was gated on is done and verified (below). Per
 republish, and the republish has now landed in its own release, so the gate is
 satisfied.
 
-### 2. Fix the cronjobs' linkerd annotation — a live production bug
-
-**The nightly `import-group-attestations` cronjob has been a silent no-op**, and
-this is not caused by anything in this programme — it predates it.
-
-The chart's cronjobs set `linkerd.io/inject: disabled`, correctly, because an
-injected proxy outlives the main container and the job would never complete. But
-**identity-api authorizes on mesh identity and returns 403 to an unmeshed
-caller**. So `GetTenantByID`'s developer-license lookup fails, `DIMORedirectURI`
-is never set, the auth provider falls back to the unregistered default
-`https://fleets.dimo.co/login.html`, and every developer-JWT call dies with
-`Unregistered redirect_uri`. `import-group-attestations` logs those at **debug**
-(prod runs at info) and returns `ExitSuccess` regardless — so the job goes green
-nightly while doing nothing.
-
-Measured, same image and secret, dry-run both ways:
-
-| | unmeshed (as the cronjob runs) | meshed |
-|---|---|---|
-| duration | 18s | 243s |
-| license plates it would cache | 0 | **22** |
-| VINs it would cache | 0 | **17** |
-
-The fix is to mesh the cronjobs and shut the proxy down explicitly, which is what
-the republish Job did:
-
-```sh
-/fleet-lite-app <subcommand>
-code=$?
-wget -q -O- --post-data='' http://localhost:4191/shutdown >/dev/null 2>&1 || true
-exit $code
-```
-
-busybox `wget` is in the image and the proxy admin server is on `:4191`. Note
-this is a **chart** change, so ArgoCD auto-syncs it from `main` — see the trap
-below. It needs no new image, so that gap is harmless here.
-
-Worth fixing `import-group-attestations` to exit non-zero on a total failure
-while you are in there. A job that cannot do its work should not report success.
+The cronjob meshing bug that was listed here second is fixed — see "Done on
+2026-08-06" below.
 
 ## Done on 2026-08-06
 
@@ -136,13 +99,59 @@ the database, not by comparing counts. 285 Kaufmann + 2 TEST.
 That is §6's verification gate: every grouped vehicle now carries fleet-lite's
 own assertion, so enforcing tenant-matching can no longer strip one.
 
-**The first attempt failed completely — 0 of 287 — and the reason is the trap
-above.** The Job initially copied the chart's `linkerd.io/inject: disabled`, hit
+**The first attempt failed completely — 0 of 287 — for the identity-api reason
+in Traps below.** The Job initially copied the chart's `linkerd.io/inject: disabled`, hit
 the identity-api 403, and died on `Unregistered redirect_uri` for every vehicle.
 Nothing partial was published, so a retry was clean. Anyone writing another job
 against this app needs to mesh it.
 
-Two things that shaped the command, both worth keeping if it is ever rewritten:
+### The cronjob meshing bug — FIXED
+
+`fleet-lite-app#101`, released `v0.6.9` (`3345b04`). The nightly
+`import-group-attestations` had been green and idle for as long as the cronjobs
+existed — unrelated to this programme, found while running the republish.
+
+The chart set `linkerd.io/inject: disabled` for a real reason (an injected proxy
+outlives the main container, so the job never completes), but **identity-api
+authorizes on mesh identity and 403s unmeshed callers**. The developer-license
+lookup failed, `DIMORedirectURI` was never resolved, and every developer-JWT
+call died on `Unregistered redirect_uri` — logged at debug, exit 0 regardless.
+
+The fix meshes the pods and shuts the proxy down explicitly. **The wrapper lives
+in the template, not in values**, so a cronjob added later cannot forget it and
+reintroduce the hang; values supplies `script` and the template owns the `sh`
+wrapper and the exit code.
+
+Verified in production by triggering the real cronjob: it now runs 3m45s instead
+of 18s, with **0** license-resolution failures, **0** `Unregistered redirect_uri`,
+and it actually cached the backlog — **22 license plates and 17 VINs**.
+
+`import-group-attestations` also now tracks attempts and failures and exits
+non-zero when *every* attempted vehicle fails. Nothing else distinguished
+"converged, no changes" from "could not talk to anything" — both reported
+`changed=0`. Deliberately not applied to `-vin-only`, where many vehicles
+legitimately have no VIN VC and 100% "failure" is normal.
+
+### 26 sync failures are now visible, and are benign
+
+The new counters immediately surfaced something that was always happening and
+never observable: `sync_attempted=564, sync_failed=26`.
+
+All 26 are token-exchange 403s — `lacks permissions`, split 15 under Kaufmann's
+license (`0xCa977Abb…`) and 11 under My Test Fleet's (`0xb92d74B4…`). These are
+vehicles whose owners have not granted, or have revoked, the SACD privileges the
+asset JWT needs. It is a data condition, not a fault, and 26 of 564 is ~4.6%.
+
+**This does not contradict the republish succeeding on all 287.** They use
+different credentials: the republish *publishes* with the tenant's developer JWT
+and signing key, while the import *fetches* per-vehicle attestations with an
+asset JWT obtained by token exchange, which is what the owner's grant gates.
+
+If `sync_failed` ever jumps toward `sync_attempted`, that is the systemic case
+the non-zero exit now catches.
+
+Two things that shaped the republish command, both worth keeping if it is ever
+rewritten:
 
 - It **skips rather than asserts empty** when a vehicle's groups vanish between
   the query and the publish. Asserting "in no groups" on a stale read would
@@ -216,9 +225,16 @@ original rule applies again: republish first, verify the set matches, then flip.
 
 **A meshed pod is required to reach identity-api.** It returns 403 to unmeshed
 callers, which silently costs you `DIMORedirectURI` and turns every
-developer-JWT call into `Unregistered redirect_uri`. This is why the cronjobs
-are broken (see "Do these first" §2) and why the republish Job is deliberately
-meshed with an explicit proxy shutdown.
+developer-JWT call into `Unregistered redirect_uri`. The chart's cronjobs are
+fixed (`v0.6.9`), but **any new Job or one-off pod must be meshed too**, and
+must then shut the proxy down or it will never terminate:
+
+```sh
+wget -q -O- --post-data='' http://localhost:4191/shutdown >/dev/null 2>&1 || true
+```
+
+For chart cronjobs this is already handled — the template wraps `script`, so
+adding one cannot reintroduce either half of the bug.
 
 **Chart changes deploy independently of image changes.** ArgoCD auto-syncs from
 `main` (`automated.enabled=true`) while prod images build on `v*` **tags**. That
@@ -258,8 +274,8 @@ tests over the ambiguous cases.
 
 ## Next, in order
 
-1. Flip `DROP_FOREIGN_TENANT_GROUPS` (the republish gate is satisfied), and fix
-   the cronjob meshing — both above
+1. Flip `DROP_FOREIGN_TENANT_GROUPS` — the republish gate is satisfied, so this
+   is the last step of R1
 2. `/v1/resolve/client-id/{clientId}` + the developer-license middleware —
    **`/v1` is currently unauthenticated**, fine locally, must land before deploy
 3. The DIMO token minter (`GET /v1/tenants/{id}/dimo-token`), so credentials
