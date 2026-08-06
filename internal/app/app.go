@@ -1,8 +1,9 @@
 // Package app wires the HTTP surface together.
 //
-// Scaffold: health and version only. The tenancy endpoints — /v1/authz,
-// /v1/tenants, /v1/resolve/client-id, the /user/v1 management surface — are
-// designed but not implemented. See the design docs referenced in README.md.
+// Implemented: health, version, and GET /v1/authz — the hot path both apps call
+// on every request. Still to come: /v1/tenants, /v1/resolve/client-id, the DIMO
+// token minter, and the /user/v1 management surface. See the design docs
+// referenced in README.md.
 package app
 
 import (
@@ -10,6 +11,9 @@ import (
 	"strconv"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
+	"github.com/DIMO-Network/fleet-tenancy-api/internal/controllers"
+	"github.com/DIMO-Network/fleet-tenancy-api/internal/service"
+	"github.com/DIMO-Network/shared/pkg/db"
 	"github.com/gofiber/fiber/v2"
 	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/rs/zerolog"
@@ -17,7 +21,7 @@ import (
 
 var appCommitHash string
 
-func App(settings *config.Settings, logger *zerolog.Logger, commitHash string) *fiber.App {
+func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, pdb *db.Store) *fiber.App {
 	appCommitHash = commitHash
 
 	app := fiber.New(fiber.Config{
@@ -30,6 +34,16 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string) *
 
 	app.Get("/health", healthCheck)
 	app.Get("/version", getVersion)
+
+	authzCtrl := controllers.NewAuthzController(logger, service.NewAuthzService(logger, pdb))
+
+	// Service-to-service surface. Callers are fleet-lite-app, kaufmann-oracle and
+	// the b2b proxy, authenticating with a DIMO developer-license JWT resolved
+	// against tenant_credentials.dimo_client_id — the same pattern as
+	// kaufmann-oracle's NewDeveloperLicenseTenantResolver. That middleware is not
+	// wired yet; the route is registered so the contract is visible and testable.
+	v1 := app.Group("/v1")
+	v1.Get("/authz", authzCtrl.GetAuthz)
 
 	return app
 }

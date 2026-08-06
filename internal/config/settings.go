@@ -3,48 +3,46 @@ package config
 import (
 	"fmt"
 	"net/url"
+
+	"github.com/DIMO-Network/shared/pkg/db"
 )
 
 // Settings is the service configuration, loaded from settings.yaml or the
-// environment. Field names mirror fleet-lite-app and kaufmann-oracle so the
-// three deploy the same way.
+// environment. Field names and layout mirror fleet-lite-app and kaufmann-oracle
+// so all three deploy the same way and code stays portable between them.
 type Settings struct {
-	Environment string `yaml:"ENVIRONMENT"`
-	LogLevel    string `yaml:"LOG_LEVEL"`
-	ServiceName string `yaml:"SERVICE_NAME"`
-
-	APIPort        string `yaml:"API_PORT"`
-	MonitoringPort string `yaml:"MONITORING_PORT"`
-
-	DBUser               string `yaml:"DB_USER"`
-	DBPassword           string `yaml:"DB_PASSWORD"`
-	DBHost               string `yaml:"DB_HOST"`
-	DBPort               string `yaml:"DB_PORT"`
-	DBName               string `yaml:"DB_NAME"`
-	DBSSLMode            string `yaml:"DB_SSL_MODE"`
-	DBMaxOpenConnections int    `yaml:"DB_MAX_OPEN_CONNECTIONS"`
-	DBMaxIdleConnections int    `yaml:"DB_MAX_IDLE_CONNECTIONS"`
+	Environment    string      `yaml:"ENVIRONMENT"`
+	LogLevel       string      `yaml:"LOG_LEVEL"`
+	ServiceName    string      `yaml:"SERVICE_NAME"`
+	APIPort        int         `yaml:"API_PORT"`
+	MonitoringPort int         `yaml:"MONITORING_PORT"`
+	DB             db.Settings `yaml:"DB"` // secret
 
 	// JwtKeySetURL verifies both end-user JWTs and developer-license JWTs —
-	// same DIMO issuer for both.
+	// they share the DIMO issuer.
 	JwtKeySetURL url.URL `yaml:"JWT_KEY_SET_URL"`
 
 	// TenantSecretEncKey derives the AES-256-GCM key for credentials at rest.
+	// MUST be set outside local — see Validate.
 	TenantSecretEncKey string `yaml:"TENANT_SECRET_ENC_KEY"`
 }
 
-func (s *Settings) IsLocal() bool { return s.Environment == "local" || s.Environment == "localdev" }
+func (s *Settings) IsLocal() bool {
+	return s.Environment == "local" || s.Environment == ""
+}
 
 // Validate rejects configurations that would silently do the wrong thing.
 //
-// An empty TenantSecretEncKey is the one that matters: sha256("") is a valid
-// 32-byte AES key, so encryption succeeds and every stored credential is
-// protected by a constant anyone can compute. Nothing errors, nothing logs. It
-// has to be caught at startup or not at all.
+// The empty-encryption-key case is the reason this exists. sha256("") is a valid
+// AES-256 key, so encryption succeeds, the ciphertext looks fine, and every
+// tenant's DIMO developer-license private key ends up protected by a constant
+// that is public knowledge. Nothing errors and nothing logs — it can only be
+// caught here. This exact failure reached production in fleet-lite-app.
 func (s *Settings) Validate() error {
 	if s.TenantSecretEncKey == "" && !s.IsLocal() {
-		return fmt.Errorf("TENANT_SECRET_ENC_KEY is empty in environment %q: "+
-			"credentials would be encrypted with sha256(\"\"), a publicly known key", s.Environment)
+		return fmt.Errorf("TENANT_SECRET_ENC_KEY is empty in environment %q: tenant "+
+			"credentials would be encrypted with sha256(\"\"), a publicly known key",
+			s.Environment)
 	}
 	return nil
 }

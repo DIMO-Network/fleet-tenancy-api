@@ -16,8 +16,10 @@ customer hierarchy the duplication can't express.
 It also **mints DIMO developer JWTs**, so developer-license private keys never
 leave the service.
 
-> **Status: scaffold.** The schema and the service contract are designed; the
-> handlers are not built yet. See `docs/` (held back — see below).
+> **Status: early.** Schema complete and migrating. `GET /v1/authz` — the hot
+> path both apps call on every request — is implemented and tested. Still to
+> come: `/v1/tenants`, `/v1/resolve/client-id`, the DIMO token minter, the
+> `/user/v1` management surface, and the backfill.
 
 ## Not a DIMO platform service
 
@@ -45,10 +47,33 @@ charts/                  Helm chart
 ```sh
 cp settings.sample.yaml settings.yaml   # edit as needed
 make migrate                            # goose up
-make run
+make run                                # :3010
 ```
 
-Needs Postgres running locally.
+Uses the local Postgres the team already runs via brew services, same as every
+other project here. The sample settings point at database `fleet_tenancy_api`
+owned by the `dimo` role; create it once with a superuser:
+
+```sql
+CREATE DATABASE fleet_tenancy_api OWNER dimo;
+```
+
+Tables live in a schema named after the database, matching fleet-lite-app and
+kaufmann-oracle.
+
+### The one endpoint that exists
+
+```sh
+curl "http://localhost:3010/v1/authz?tenant_id=<uuid>&wallet=0x..."
+```
+
+Returns role, capabilities, group scope, and `via` — `direct` for a membership,
+`delegation` when an operator reaches one of its customers, `none` for no
+access. No access is a **200 with `via: "none"`**, not a 403: the caller decides
+the status code for its own surface, and a 403 here would be indistinguishable
+from this service rejecting the caller's own credentials.
+
+Tests run against that same local database and skip cleanly if it is not up.
 
 ## Design docs
 
