@@ -27,8 +27,12 @@ type Settings struct {
 	TenantSecretEncKey string `yaml:"TENANT_SECRET_ENC_KEY"`
 }
 
+// IsLocal is "local" exactly. Anything else — including an unset ENVIRONMENT or
+// a typo like "localdev" — fails closed, so a misconfigured deployment refuses
+// to boot rather than quietly encrypting under the weak key. Matches
+// fleet-lite-app's definition.
 func (s *Settings) IsLocal() bool {
-	return s.Environment == "local" || s.Environment == ""
+	return s.Environment == "local"
 }
 
 // Validate rejects configurations that would silently do the wrong thing.
