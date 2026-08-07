@@ -1,0 +1,63 @@
+replicaCount: 2
+
+image:
+  repository: dimozone/fleet-tenancy-api
+  pullPolicy: IfNotPresent
+  tag: 0.1.0
+
+imagePullSecrets: []
+nameOverride: ''
+fullnameOverride: ''
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ''
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+env:
+  ENVIRONMENT: prod
+  LOG_LEVEL: info
+  SERVICE_NAME: fleet-tenancy-api
+  API_PORT: '8084'
+  MONITORING_PORT: '8085'
+  DB_PORT: '5432'
+  DB_NAME: fleet_tenancy_api
+  DB_MAX_OPEN_CONNECTIONS: '20'
+  DB_MAX_IDLE_CONNECTIONS: '6'
+  DB_SSL_MODE: require
+  JWT_KEY_SET_URL: https://auth.dimo.zone/keys
+
+service:
+  type: ClusterIP
+  ports:
+    http:
+      port: 8084
+      targetPort: http
+      protocol: TCP
+
+ports:
+  - name: http
+    containerPort: 8084
+    protocol: TCP
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 192Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podDisruptionBudget:
+  minAvailable: 1

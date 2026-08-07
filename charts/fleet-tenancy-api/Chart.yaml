@@ -1,0 +1,11 @@
+apiVersion: v2
+name: fleet-tenancy-api
+description: Tenants, users, memberships, delegations and vehicle entitlements for DIMO's fleet products
+type: application
+
+# Chart version — bump on template changes.
+version: 0.1.0
+
+# Application version. The deployed image tag comes from image.tag in
+# values-prod.yaml, which the build workflow rewrites on each v* tag.
+appVersion: "0.1.0"
