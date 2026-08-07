@@ -1,0 +1,24 @@
+name: Helm Lint and Test Charts
+
+on: pull_request
+
+jobs:
+  helm-lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: helm-check
+        uses: igabaydulin/helm-check-action@0.2.1
+        env:
+          CHART_LOCATION: ./charts/fleet-tenancy-api
+          CHART_VALUES: ./charts/fleet-tenancy-api/values.yaml
+
+      # values-prod.yaml is the file ArgoCD actually deploys and the one the
+      # release workflow rewrites, so render it too. The step above only covers
+      # the base values, which would leave the shipping config unchecked.
+      - name: helm template with prod values
+        run: |
+          helm template fleet-tenancy-api ./charts/fleet-tenancy-api \
+            -f ./charts/fleet-tenancy-api/values.yaml \
+            -f ./charts/fleet-tenancy-api/values-prod.yaml > /dev/null
