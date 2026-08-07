@@ -45,6 +45,9 @@ resources:
     memory: 512Mi
 autoscaling:
   enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
 nodeSelector: {}
 tolerations: []
 affinity: {}

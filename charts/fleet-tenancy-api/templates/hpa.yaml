@@ -1,0 +1,42 @@
+{{- if .Values.autoscaling.enabled }}
+# Deliberately autoscaling/v2, not the v2beta1 the older charts in the org use.
+# v2beta1 was removed in Kubernetes 1.26 and this cluster runs 1.33, so a
+# v2beta1 HPA would simply fail to apply. The metrics block differs with it:
+# target.averageUtilization replaces the flat targetAverageUtilization.
+#
+# This template exists because deployment.yaml omits `replicas` when autoscaling
+# is enabled. Without an HPA to take over, enabling it would drop the Deployment
+# to the default of one replica and scale nothing — quieter and worse than an
+# error.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "fleet-tenancy-api.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fleet-tenancy-api.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "fleet-tenancy-api.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

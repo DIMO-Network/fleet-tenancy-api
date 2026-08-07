@@ -5,9 +5,11 @@ APP := fleet-tenancy-api
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
 
+COMMIT ?= dev
+
 build: ## Build the binary into target/bin
 	@mkdir -p target/bin
-	go build -o target/bin/$(APP) ./cmd/$(APP)
+	CGO_ENABLED=0 go build -ldflags "-X main.commitHash=$(COMMIT)" -o target/bin/$(APP) ./cmd/$(APP)
 
 run: ## Run the server
 	go run ./cmd/$(APP)
