@@ -3,7 +3,12 @@ WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags "-X main.commitHash=$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
+# Passed by the build workflow. The previous `git rev-parse` here resolved
+# against whatever .git happened to be in the build context, so /version
+# reported "unknown" in any build that excluded it — including the image the
+# workflow actually ships.
+ARG COMMIT_HASH=unknown
+RUN CGO_ENABLED=0 go build -ldflags "-X main.commitHash=${COMMIT_HASH}" \
     -o /out/fleet-tenancy-api ./cmd/fleet-tenancy-api
 
 FROM gcr.io/distroless/static-debian12

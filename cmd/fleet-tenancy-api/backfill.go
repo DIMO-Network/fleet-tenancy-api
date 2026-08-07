@@ -107,13 +107,13 @@ func (p *backfillCmd) Execute(ctx context.Context, _ *flag.FlagSet, _ ...interfa
 		p.logger.Err(err).Msg("open kaufmann")
 		return subcommands.ExitFailure
 	}
-	defer kdb.Close()
+	defer func() { _ = kdb.Close() }()
 	fdb, err := sql.Open("postgres", fDSN)
 	if err != nil {
 		p.logger.Err(err).Msg("open fleet-lite")
 		return subcommands.ExitFailure
 	}
-	defer fdb.Close()
+	defer func() { _ = fdb.Close() }()
 
 	store := db.NewDbConnectionFromSettings(ctx, &p.settings.DB, true)
 	store.WaitForDB(p.logger)
@@ -307,7 +307,7 @@ func readKaufmannTenants(ctx context.Context, kdb *sql.DB) ([]srcTenant, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []srcTenant
 	for rows.Next() {
 		var t srcTenant
@@ -340,7 +340,7 @@ func strandedFleetLiteTenants(ctx context.Context, fdb *sql.DB, kt []srcTenant) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []fleetLiteTenant
 	for rows.Next() {
 		var t fleetLiteTenant
@@ -374,7 +374,7 @@ func copyKaufmannMembers(ctx context.Context, kdb *sql.DB, tx *sql.Tx) (users, m
 	if qerr != nil {
 		return 0, 0, qerr
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var tenantID, wallet, perms string
 		var isAdmin bool
@@ -413,7 +413,7 @@ func copyFleetLiteMembers(ctx context.Context, fdb *sql.DB, tx *sql.Tx) (users, 
 	if qerr != nil {
 		return 0, 0, qerr
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var tenantID, wallet, role string
 		var email sql.NullString

@@ -5,7 +5,9 @@ go 1.26.0
 require (
 	github.com/DIMO-Network/shared v1.1.9
 	github.com/ethereum/go-ethereum v1.16.8
+	github.com/gofiber/contrib/jwt v1.1.2
 	github.com/gofiber/fiber/v2 v2.52.14
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/subcommands v1.2.0
 	github.com/lib/pq v1.12.3
 	github.com/pressly/goose/v3 v3.27.3
@@ -15,6 +17,7 @@ require (
 
 require (
 	github.com/DIMO-Network/yaml v0.1.0 // indirect
+	github.com/MicahParks/keyfunc/v2 v2.1.0 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/google/uuid v1.6.0 // indirect

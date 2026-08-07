@@ -36,7 +36,7 @@ func testStore(t *testing.T) *db.Store {
 	if err != nil {
 		t.Skipf("local postgres not reachable, skipping: %v", err)
 	}
-	defer probe.Close()
+	defer func() { _ = probe.Close() }()
 	if err := probe.Ping(); err != nil {
 		t.Skipf("local postgres not reachable, skipping: %v", err)
 	}

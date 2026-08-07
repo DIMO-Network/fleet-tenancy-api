@@ -1,7 +1,8 @@
 # Agent Guidelines — fleet-tenancy-api
 
-**Status: scaffold.** Health and version only. The schema is designed and
-migrated; the handlers are not built.
+**Status: not yet deployed.** The schema is migrated, `/v1` is authenticated and
+serves `authz` and `resolve/client-id`, and there is a chart. The rest of the
+surface in the design spec is not built.
 
 ## What this service is
 
