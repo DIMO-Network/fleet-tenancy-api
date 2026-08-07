@@ -1,23 +1,18 @@
 replicaCount: 1
-
 image:
   repository: dimozone/fleet-tenancy-api
   pullPolicy: IfNotPresent
-  tag: 0.1.0
-
+  tag: 5b7ee68
 imagePullSecrets: []
 nameOverride: ''
 fullnameOverride: ''
-
 serviceAccount:
   create: true
   annotations: {}
   name: ''
-
 podAnnotations: {}
 podSecurityContext: {}
 securityContext: {}
-
 env:
   ENVIRONMENT: dev
   LOG_LEVEL: info
@@ -29,11 +24,7 @@ env:
   DB_MAX_OPEN_CONNECTIONS: '10'
   DB_MAX_IDLE_CONNECTIONS: '3'
   DB_SSL_MODE: require
-  # Verifies both end-user JWTs and developer-license JWTs — one DIMO issuer.
-  # /v1 authentication depends on this being reachable; if it is wrong, every
-  # service-to-service call fails closed at the JWT layer.
   JWT_KEY_SET_URL: https://auth.dimo.zone/keys
-
 service:
   type: ClusterIP
   ports:
@@ -41,21 +32,10 @@ service:
       port: 8084
       targetPort: http
       protocol: TCP
-
 ports:
   - name: http
     containerPort: 8084
     protocol: TCP
-
-# No ingress, deliberately.
-#
-# /v1 is a service-to-service surface: its callers (fleet-lite-app,
-# kaufmann-oracle, the b2b proxy) are all in-cluster, and the design specifies it
-# as cluster-internal only. The developer-license JWT is authentication in
-# depth, not the only wall — publishing an ingress would make a credential
-# check the sole thing standing between the internet and every tenant's
-# authorization data. Add one only alongside a deliberate decision to expose it.
-
 resources:
   requests:
     cpu: 50m
@@ -63,18 +43,10 @@ resources:
   limits:
     cpu: 500m
     memory: 512Mi
-
 autoscaling:
   enabled: false
-
 nodeSelector: {}
 tolerations: []
 affinity: {}
-
 podDisruptionBudget:
   minAvailable: 0
-
-# No ServiceMonitor yet: the app exposes no /metrics endpoint, so scraping it
-# would create a permanently-failing target and the alert noise that comes with
-# it. MONITORING_PORT is already carried in config, so adding one is a template
-# and a values block once the endpoint lands.
