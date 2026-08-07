@@ -14,15 +14,45 @@ decisions are locked — see `README.md` in the design set.
 
 ## Do these first
 
-### 1. Flip `DROP_FOREIGN_TENANT_GROUPS` — now unblocked, still NOT DONE
+**R1 is complete.** `DROP_FOREIGN_TENANT_GROUPS` is `true` in prod as of
+2026-08-06, verified: a full sync afterwards reported `checked=576, changed=0`
+with zero reconcile events, and the 287 grouped-vehicle memberships are intact.
+The pre-flight was a dry run with the flag forced on — `reconcile` computes the
+whole add/remove set before the `dryRun` check, so it previewed the change
+exactly rather than approximately.
 
-The republish it was gated on is done and verified (below). Per
-`07-r1-group-id-migration.md` §6 this must not ship in the same release as the
-republish, and the republish has now landed in its own release, so the gate is
-satisfied.
+### 1. Create the AWS Secrets Manager entries, then register the ArgoCD app
 
-The cronjob meshing bug that was listed here second is fixed — see "Done on
-2026-08-06" below.
+The service is deployable but **not deployed**, and deliberately so: nothing
+exists in ArgoCD for it yet, so merging its chart deploys nothing.
+
+Three secrets, at `prod/fleet-tenancy-api/`:
+
+| Key | Note |
+|---|---|
+| `db_user`, `db_password`, `db_host` | The prod database is already provisioned |
+| `tenant_secret_enc_key` | **Treat as permanent** — see below |
+
+All three must exist **before** the chart is applied: a missing `remoteRef`
+fails the whole ExternalSecret, not just that key, so the pod gets no database
+credentials either and never starts.
+
+`tenant_secret_enc_key` deserves a moment's thought rather than a quick
+`openssl rand`. It is the key every tenant credential is encrypted under. The
+service refuses to boot outside local if it is empty — deliberately, because
+`sha256("")` is a valid AES-256 key, so an unset value does not fail, it
+encrypts everything under a constant anyone can compute. That exact failure
+reached production in fleet-lite-app. And once the backfill has written
+credentials under it, changing it means re-encrypting every row.
+
+### 2. Then the real backfill
+
+Still needs a decision recorded below, and note the backfill has only ever been
+dry-run. **Running it in-cluster will hit a wall the other repos do not have:
+this image is distroless**, so it has no shell and no `wget` — the
+proxy-shutdown trick the fleet-lite cronjobs use cannot work here. A meshed Job
+will never terminate. Either add `linkerd-await` to the image, use a
+shell-bearing image for the Job, or run it from a laptop through the tunnel.
 
 ## Done on 2026-08-06
 
@@ -199,9 +229,10 @@ and both services logged **zero errors** in the ten minutes after.
 | | |
 |---|---|
 | Merged + deployed | `fleet-lite-app#97` (encryption fix), `#99` (R1) — `v0.6.7` |
+| Merged + deployed | `#100` republish CLI `v0.6.8`, `#101` cronjob meshing `v0.6.9`, `#102` R1 step 6 |
 | Merged + deployed | `kaufmann-oracle#185` (R1) — `v1.34.0` |
 | Merged | design docs in all three repos |
-| This repo | schema, `/v1/authz`, backfill. Builds and tests clean |
+| This repo (`#2`) | schema, **authenticated** `/v1` (`authz`, `resolve/client-id`), backfill, chart, CI. **Not deployed** |
 
 `fleet-lite-app#98` and various dependabot PRs are unrelated.
 
@@ -276,8 +307,15 @@ tests over the ambiguous cases.
 
 1. Flip `DROP_FOREIGN_TENANT_GROUPS` — the republish gate is satisfied, so this
    is the last step of R1
-2. `/v1/resolve/client-id/{clientId}` + the developer-license middleware —
-   **`/v1` is currently unauthenticated**, fine locally, must land before deploy
+2. Decide whether `/v1` should enforce **caller == subject**. Authentication now
+   identifies which tenant is calling, but no handler restricts a caller to
+   asking about its own tenant, so any registered developer license can query
+   `/v1/authz` for any tenant id. Tolerable only because the surface is
+   cluster-internal with no ingress. Which way to go depends on which license
+   the callers actually present: fleet-lite holds per-tenant credentials and
+   could present the subject tenant's, which would make enforcement natural.
+   `app.CallerFrom` already exposes the caller, so it is a handler change, not
+   plumbing
 3. The DIMO token minter (`GET /v1/tenants/{id}/dimo-token`), so credentials
    never leave this service
 4. `/user/v1` management surface, then the b2b operator console
