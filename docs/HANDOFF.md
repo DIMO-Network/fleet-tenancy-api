@@ -24,7 +24,10 @@ exactly rather than approximately.
 ### 1. Create the AWS Secrets Manager entries, then register the ArgoCD app
 
 The service is deployable but **not deployed**, and deliberately so: nothing
-exists in ArgoCD for it yet, so merging its chart deploys nothing.
+exists in ArgoCD for it yet, so merging its chart deploys nothing. An image does
+now exist — `buildpushdev` builds one on every merge to main, and the first is
+`dimozone/fleet-tenancy-api:5b7ee68`. A `v*` tag builds the prod image and
+rewrites `values-prod.yaml`, exactly as in the sibling repos.
 
 Three secrets, at `prod/fleet-tenancy-api/`:
 
