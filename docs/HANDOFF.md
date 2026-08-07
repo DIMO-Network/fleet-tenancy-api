@@ -21,7 +21,31 @@ The pre-flight was a dry run with the flag forced on — `reconcile` computes th
 whole add/remove set before the `dryRun` check, so it previewed the change
 exactly rather than approximately.
 
-### 1. Create the AWS Secrets Manager entries, then register the ArgoCD app
+### 1. Register the ArgoCD app — everything it needs is verified
+
+Pre-flight done 2026-08-07, all green:
+
+| Check | Result |
+|---|---|
+| All four secrets exist at the exact `remoteRef` names | ✅ |
+| `tenant_secret_enc_key` is 64 hex chars, no trailing whitespace | ✅ |
+| Prod image `f19e4c8` published, and `values-prod.yaml` pins it | ✅ (it pinned a non-existent `0.1.0` until `v0.1.0` was cut) |
+| App role can connect to `fleet_tenancy_api` | ✅ |
+| `CREATE SCHEMA` + `CREATE EXTENSION pgcrypto` + `gen_random_uuid()` | ✅ — tested as the exact sequence migrate runs, in a rolled-back transaction |
+
+The pgcrypto one was worth checking rather than assuming: the role is **not**
+`rds_superuser` and the extension was not installed, which on older Postgres
+would have failed the very first migration statement. It works because pgcrypto
+is a *trusted* extension on PG 13+ and the role holds `CREATE` on the database.
+If a future environment runs older Postgres, or the role loses `CREATE`, that is
+where the deploy will break — and it breaks in the migrate init container, so
+`kubectl logs <pod> -c fleet-tenancy-api-migrate` is the first place to look.
+
+The Application spec mirrors `fleet-lite-app`: `path: charts/fleet-tenancy-api`,
+`valueFiles: [values-prod.yaml]`, namespace `prod`, automated sync with prune.
+Note that automated sync means it deploys the moment it is registered.
+
+### Reference: the AWS secrets
 
 The service is deployable but **not deployed**, and deliberately so: nothing
 exists in ArgoCD for it yet, so merging its chart deploys nothing. An image does
