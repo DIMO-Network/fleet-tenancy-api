@@ -29,7 +29,7 @@ Pre-flight done 2026-08-07, all green:
 |---|---|
 | All four secrets exist at the exact `remoteRef` names | ✅ |
 | `tenant_secret_enc_key` is 64 hex chars, no trailing whitespace | ✅ |
-| Prod image `f19e4c8` published, and `values-prod.yaml` pins it | ✅ (it pinned a non-existent `0.1.0` until `v0.1.0` was cut) |
+| Prod image published, and `values-prod.yaml` pins it | ✅ `e8fb4ea` (`v0.1.1`). It pinned a non-existent `0.1.0` until `v0.1.0` was cut, then the superseded distroless build until `v0.1.1` — **a values-only merge does not repin prod; only a `v*` tag does** |
 | App role can connect to `fleet_tenancy_api` | ✅ |
 | `CREATE SCHEMA` + `CREATE EXTENSION pgcrypto` + `gen_random_uuid()` | ✅ — tested as the exact sequence migrate runs, in a rolled-back transaction |
 
@@ -75,11 +75,10 @@ credentials under it, changing it means re-encrypting every row.
 ### 2. Then the real backfill
 
 Still needs a decision recorded below, and note the backfill has only ever been
-dry-run. **Running it in-cluster will hit a wall the other repos do not have:
-this image is distroless**, so it has no shell and no `wget` — the
-proxy-shutdown trick the fleet-lite cronjobs use cannot work here. A meshed Job
-will never terminate. Either add `linkerd-await` to the image, use a
-shell-bearing image for the Job, or run it from a laptop through the tunnel.
+dry-run. It can now run as a normal in-cluster Job: the image moved from distroless to
+busybox in `v0.1.1`, so it has the shell and `wget` the linkerd proxy-shutdown
+wrapper needs, exactly like the fleet-lite cronjobs. Mesh the Job and end its
+command with the shutdown line, or it will never terminate.
 
 ## Done on 2026-08-06
 
