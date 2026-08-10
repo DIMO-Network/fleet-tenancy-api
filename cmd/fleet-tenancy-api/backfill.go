@@ -3,16 +3,18 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"os"
 	"strings"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
+	"github.com/DIMO-Network/fleet-tenancy-api/internal/models"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/service"
 	"github.com/DIMO-Network/shared/pkg/db"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/google/subcommands"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	"github.com/rs/zerolog"
 )
 
@@ -366,9 +368,65 @@ func upsertUser(ctx context.Context, tx *sql.Tx, wallet string, email sql.NullSt
 // copyKaufmannMembers maps access_tenants to memberships. is_admin becomes the
 // 'admin' role; permissions carry across as-is since they are already the
 // capability model this service adopts.
+// mapKaufmannCapabilities translates kaufmann's stored permissions into the
+// shared model's vocabulary. Two of its strings do not survive the move:
+//
+//   - manage_admin_users is simply renamed manage_members. Copying it verbatim
+//     does not merely look untidy — every authorization check reads
+//     `permissions`, so an operator admin carrying the old string would be
+//     refused member management on cutover.
+//
+//   - view_all_fleets is deliberately absent from the shared model. It encodes
+//     the same fact as "no group restriction", which lives in scope_group_ids,
+//     and two homes for one fact have no defined resolution when they disagree.
+//     It is dropped here and expressed as scope_group_ids = NULL by the caller.
+func mapKaufmannCapabilities(perms []string) []string {
+	out := make([]string, 0, len(perms))
+	seen := map[string]bool{}
+	for _, p := range perms {
+		switch p {
+		case "view_all_fleets":
+			continue // becomes scope_group_ids = NULL, not a capability
+		case "manage_admin_users":
+			p = models.CapManageMembers
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func copyKaufmannMembers(ctx context.Context, kdb *sql.DB, tx *sql.Tx) (users, members int, err error) {
+	// scope_group_ids is the reason access_fleet_groups is joined here rather
+	// than ignored. In kaufmann a member sees every fleet only when they hold
+	// view_all_fleets; otherwise they see exactly the groups assigned to them,
+	// which is frequently none at all. NULL means unrestricted in this schema,
+	// so writing NULL for everyone silently promotes every restricted member to
+	// full fleet access. Measured against production on 2026-08-10 that was 131
+	// of 159 memberships.
+	//
+	// The distinction that carries the meaning:
+	//   view_all_fleets        -> NULL          (unrestricted)
+	//   groups assigned        -> {those ids}   (restricted to them)
+	//   no view_all, no groups -> {}            (restricted to nothing)
+	//
+	// An empty array is emphatically not NULL. AuthzResult.Unrestricted() tests
+	// for nil, so {} is "sees nothing" and NULL is "sees everything" — the exact
+	// inversion this migration has to get right.
+	//
+	// access_fleet_groups is keyed by wallet alone, so it is joined through
+	// fleet_groups to pin each row to the tenant being copied. Group ids became
+	// tenant-scoped in R1, so they drop straight into scope_group_ids.
 	rows, qerr := kdb.QueryContext(ctx, `
-		SELECT at.tenant_id, at.wallet, at.permissions::text, at.is_admin, up.email
+		SELECT at.tenant_id, at.wallet, at.permissions::text, at.is_admin, up.email,
+		       COALESCE(
+		         (SELECT array_agg(g.fleet_group_id ORDER BY g.fleet_group_id)
+		            FROM kaufmann_oracle.access_fleet_groups g
+		            JOIN kaufmann_oracle.fleet_groups fg ON fg.id = g.fleet_group_id
+		           WHERE g.wallet = at.wallet AND fg.tenant_id = at.tenant_id),
+		         ARRAY[]::text[]) AS scope_group_ids
 		  FROM kaufmann_oracle.access_tenants at
 		  LEFT JOIN kaufmann_oracle.user_profiles up ON up.wallet = at.wallet`)
 	if qerr != nil {
@@ -379,7 +437,8 @@ func copyKaufmannMembers(ctx context.Context, kdb *sql.DB, tx *sql.Tx) (users, m
 		var tenantID, wallet, perms string
 		var isAdmin bool
 		var email sql.NullString
-		if err := rows.Scan(&tenantID, &wallet, &perms, &isAdmin, &email); err != nil {
+		var scope pq.StringArray
+		if err := rows.Scan(&tenantID, &wallet, &perms, &isAdmin, &email, &scope); err != nil {
 			return users, members, err
 		}
 		if err := upsertUser(ctx, tx, wallet, email); err != nil {
@@ -390,12 +449,40 @@ func copyKaufmannMembers(ctx context.Context, kdb *sql.DB, tx *sql.Tx) (users, m
 		if isAdmin {
 			role = "admin"
 		}
+
+		var srcPerms []string
+		if uerr := json.Unmarshal([]byte(perms), &srcPerms); uerr != nil {
+			srcPerms = nil
+		}
+		viewAll := false
+		for _, p := range srcPerms {
+			if p == "view_all_fleets" {
+				viewAll = true
+				break
+			}
+		}
+		mapped, merr := json.Marshal(mapKaufmannCapabilities(srcPerms))
+		if merr != nil {
+			return users, members, merr
+		}
+
+		// NULL only when kaufmann actually said "all fleets".
+		var scopeArg interface{}
+		if viewAll {
+			scopeArg = nil
+		} else {
+			scopeArg = pq.Array([]string(scope))
+		}
+
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO memberships (tenant_id, wallet, role, permissions)
-			VALUES ($1, $2, $3, $4::jsonb)
+			INSERT INTO memberships (tenant_id, wallet, role, permissions, scope_group_ids)
+			VALUES ($1, $2, $3, $4::jsonb, $5::text[])
 			ON CONFLICT (tenant_id, wallet) DO UPDATE SET
-				role = EXCLUDED.role, permissions = EXCLUDED.permissions, updated_at = NOW()`,
-			tenantID, common.HexToAddress(wallet).Hex(), role, perms); err != nil {
+				role = EXCLUDED.role,
+				permissions = EXCLUDED.permissions,
+				scope_group_ids = EXCLUDED.scope_group_ids,
+				updated_at = NOW()`,
+			tenantID, common.HexToAddress(wallet).Hex(), role, string(mapped), scopeArg); err != nil {
 			return users, members, err
 		}
 		members++
