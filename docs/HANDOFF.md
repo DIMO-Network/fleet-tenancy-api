@@ -21,7 +21,29 @@ The pre-flight was a dry run with the flag forced on — `reconcile` computes th
 whole add/remove set before the `dryRun` check, so it previewed the change
 exactly rather than approximately.
 
-### 1. Register the ArgoCD app — everything it needs is verified
+### DEPLOYED 2026-08-10 — the service is live in prod
+
+ArgoCD `fleet-tenancy-api` is Synced/Healthy, 2/2 pods, zero restarts, no errors
+of its own. `20260805120000_init.sql` applied cleanly on first boot and the
+second pod correctly found nothing to do.
+
+**There is no URL.** The chart ships no ingress on purpose, so nothing is
+publicly reachable. In-cluster it is:
+
+```
+http://fleet-tenancy-api.prod.svc.cluster.local:8084
+```
+
+Verified from inside the cluster: `/health` returns `{"status":"up"}`,
+`/version` returns the deployed commit, and `/v1` returns 401 to an
+unauthenticated caller.
+
+**Minor, worth fixing when convenient:** `ErrorHandler` logs every non-404 at
+error level, so each 401 on `/v1` appears in the error stream. Expected client
+errors will look like server errors once callers integrate, and will feed any
+error-rate alerting. 4xx belongs at warn or debug.
+
+The pre-flight below is kept because it records what was checked and why.
 
 Pre-flight done 2026-08-07, all green:
 
@@ -258,7 +280,7 @@ and both services logged **zero errors** in the ten minutes after.
 | Merged + deployed | `#100` republish CLI `v0.6.8`, `#101` cronjob meshing `v0.6.9`, `#102` R1 step 6 |
 | Merged + deployed | `kaufmann-oracle#185` (R1) — `v1.34.0` |
 | Merged | design docs in all three repos |
-| This repo (`#2`) | schema, **authenticated** `/v1` (`authz`, `resolve/client-id`), backfill, chart, CI. **Not deployed** |
+| This repo | **DEPLOYED 2026-08-10** — authenticated `/v1` (`authz`, `resolve/client-id`), chart, CI, busybox image. Backfill written but never run for real |
 
 `fleet-lite-app#98` and various dependabot PRs are unrelated.
 
