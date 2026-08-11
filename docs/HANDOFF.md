@@ -94,13 +94,71 @@ encrypts everything under a constant anyone can compute. That exact failure
 reached production in fleet-lite-app. And once the backfill has written
 credentials under it, changing it means re-encrypting every row.
 
-### 2. Then the real backfill
+## Backfill — RUN AND VERIFIED 2026-08-10
 
-Still needs a decision recorded below, and note the backfill has only ever been
-dry-run. It can now run as a normal in-cluster Job: the image moved from distroless to
-busybox in `v0.1.1`, so it has the shell and `wget` the linkerd proxy-shutdown
-wrapper needs, exactly like the fleet-lite cronjobs. Mesh the Job and end its
-command with the shutdown line, or it will never terminate.
+Production now holds 15 tenants (11 operator, 4 self-serve), 15 credentials, 153
+users and 164 memberships. All 15 tenants' secrets decrypt under the key the pod
+actually reads — verified with the value from the k8s secret, not AWS.
+
+It took three runs, because the first exposed two ways the migration was not
+faithful to its sources. Both were latent: nothing consumes `/v1/authz` yet.
+
+**Group scope was never migrated.** `access_fleet_groups` had zero references in
+`backfill.go`, so every kaufmann membership was written `scope_group_ids = NULL`
+— which here means *unrestricted*. In kaufmann a member sees every fleet only
+with `view_all_fleets`, and otherwise sees exactly their assigned groups, often
+none. That silently granted **131 of 159 memberships** the whole 524-vehicle
+fleet. Fixed in `#10`; the mapping is now
+
+```
+view_all_fleets        -> NULL          unrestricted
+groups assigned        -> {those ids}   restricted to them
+no view_all, no groups -> {}            restricted to nothing
+```
+
+`{}` is not `NULL`. `Unrestricted()` tests for nil, so the empty array is "sees
+nothing" and nil is "sees everything" — the inversion that made the omission
+dangerous rather than merely incomplete.
+
+**Capabilities were copied verbatim**, so 28 memberships carried
+`manage_admin_users` rather than `manage_members` and would have been refused
+member management, and 25 carried the dead `view_all_fleets`.
+
+**A membership can exist in both sources** — the Kaufmann tenant does, now that
+the uuids are unified — and whichever wrote last won outright, demoting a real
+kaufmann admin to `role=member` with no capabilities. `#11` reads both sources,
+merges per (tenant, wallet) and writes once: capabilities union, scope takes the
+more permissive side, the higher role label wins, latest login survives.
+
+Merging happens in memory rather than in `ON CONFLICT` deliberately. A SQL union
+would depend on write order and would accumulate across runs, never shedding a
+capability removed at the source. As built, a re-run converges on whatever the
+sources currently say.
+
+`#12` then fixed a regression `#11` introduced: `roleRank("")` equals
+`roleRank("member")`, so the strict `>` left 150 rows with an empty role. Found
+by diffing production before and after, not by a test.
+
+Net effect of the merge, against the pre-merge state: exactly **4 rows**, all in
+the Kaufmann tenant, all gains, no losses. Final distribution is 120 member / 36
+admin / 8 owner, and 33 unrestricted / 12 group-restricted / 119 restricted to
+nothing.
+
+**The lesson worth carrying:** every one of these was found by diffing production
+against its sources, not by reading the code or trusting the summary counters.
+The counters were themselves misleading — they counted rows *processed*, not
+rows *written*, so 169 was reported where 164 existed. They now report merged
+counts and an explicit `overlapping` figure.
+
+### Still to do
+
+- Decide whether `/v1` enforces **caller == subject**. Authentication identifies
+  the caller but no handler restricts it to its own tenant. Safe only while the
+  service has no ingress. `app.CallerFrom` already exposes the caller.
+- `ErrorHandler` logs every non-404 at error level, so ordinary 401s land in the
+  error stream and will feed alerting once callers integrate.
+- Nothing consumes `/v1/authz` yet — fleet-lite, kaufmann and b2b all still use
+  their own edge checks. Cutover is the next real milestone.
 
 ## Done on 2026-08-06
 
