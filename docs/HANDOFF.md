@@ -379,6 +379,68 @@ b2b has to decide whether it gets its own registered credential marked
 `is_service_caller`, or presents each operator's license per request via the
 token minter. The first is simpler; the second is tighter.
 
+## NEXT SESSION: wire `X-Tenancy-Key` into fleet-lite and b2b
+
+Nothing calls `/v1` yet, so nothing is broken today. This is the prerequisite
+for cutover. The service is deployed, backfilled and gated; the callers simply
+do not send the header.
+
+**Target:** `http://fleet-tenancy-api.prod.svc.cluster.local:8084` (no ingress,
+by design). Every `/v1` request needs **both**:
+
+| Header | Value |
+|---|---|
+| `X-Tenancy-Key` | the app's pre-shared key |
+| `Authorization: Bearer …` | a DIMO developer-license JWT for the tenant it acts as |
+
+Keys already exist in AWS Secrets Manager, verified identical to the entries in
+the set the service verifies against:
+
+| App | Secret |
+|---|---|
+| fleet-lite-app | `prod/fleet-lite-app/tenancy_api_key` |
+| kaufmann-oracle | `prod/kaufmann-oracle/tenancy_api_key` |
+| b2b | `prod/fleet_onboard/tenancy_api_key` (also at `prod/fleet-onboard-app/…`) |
+
+### fleet-lite-app — the straightforward one
+
+1. `charts/fleet-lite-app/templates/secret.yaml`: add a `remoteRef` for
+   `{{ .Release.Namespace }}/fleet-lite-app/tenancy_api_key` →
+   `secretKey: TENANCY_API_KEY`, and a `TENANCY_API_URL` in `values-prod.yaml`.
+2. Add both to `config.Settings`, and send the header on every tenancy call.
+3. It already mints per-tenant developer JWTs via
+   `TenantService.GetDeveloperJWT(tenant)` — that is the `Authorization` header,
+   and it makes fleet-lite's caller identity the *subject* tenant, so
+   `CallerMayAccess` passes on the "self" branch with nothing further needed.
+
+### b2b — has a real gap to close first
+
+**b2b cannot authenticate to `/v1` at all yet**, and this is separate from the
+key. Its `CLIENT_ID` `0x51dacC…` is the Login-with-DIMO *app* id, shared with
+fleet-lite, and is **not** a registered `tenant_credentials.dimo_client_id`. The
+PSK gets it past layer 1; layer 2 still rejects it.
+
+Two ways to close it — this is a decision, not a detail:
+
+- **Register a credential for b2b and set `is_service_caller = true`.** Simplest.
+  b2b then reaches every tenant, which is what an operator console spanning many
+  operators arguably needs. The flag exists for exactly this.
+- **Have b2b present each operator's license per request**, obtained via the
+  token minter (`GET /v1/tenants/{id}/dimo-token`, not built yet). Tighter, since
+  scope is then enforced per request, but it needs the minter first and pushes
+  work into b2b.
+
+Note its chart uses `prod/fleet_onboard/<name>` with an **underscore**, unlike
+the other repos — the key is stored under that convention so the new `remoteRef`
+matches its neighbours.
+
+### Verifying a caller once wired
+
+From inside any pod, a request with a valid key but no JWT returns 401 from the
+JWT layer and logs **no** `unrecognised trusted-caller key` warning. That absence
+is how you tell layer 1 passed — the status code alone cannot, since all three
+failure modes are 401.
+
 ## /v1 access control — three layers, settled 2026-08-10
 
 | Layer | Question | Mechanism |
