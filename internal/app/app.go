@@ -6,15 +6,15 @@
 // minter, and the /user/v1 management surface. See the design docs referenced in
 // README.md.
 //
-// OPEN DECISION, worth settling before more of /v1 lands: authentication
-// identifies *which* tenant is calling, but no handler restricts a caller to
-// asking about its own tenant. Any holder of a registered developer license can
-// currently ask /v1/authz about any tenant id. That is tolerable only because
-// the surface is cluster-internal with no ingress. Whether to enforce
-// caller == subject depends on which license the callers actually present —
-// fleet-lite holds per-tenant credentials and could present the subject
-// tenant's, which would make enforcement natural. CallerFrom exposes the caller
-// so a handler can log or enforce it without further plumbing.
+// Callers are scoped, not merely authenticated: TenantService.CallerMayAccess
+// bounds every /v1 handler to tenants whose effective credential is the
+// caller's — itself, a child holding no license of its own, or a tenant it holds
+// a delegation over — with an explicit service-caller flag for a shared proxy.
+//
+// The rule mirrors the architecture's credential resolution rule on purpose. The
+// tempting alternative, "caller must equal subject", would pass today while
+// every tenant is unparented and break on the first operator-managed customer,
+// since such a customer holds no license and is reached with its operator's.
 package app
 
 import (
@@ -47,8 +47,9 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	app.Get("/health", healthCheck)
 	app.Get("/version", getVersion)
 
-	authzCtrl := controllers.NewAuthzController(logger, service.NewAuthzService(logger, pdb))
-	resolveCtrl := controllers.NewResolveController(logger, service.NewTenantService(logger, pdb))
+	tenantSvc := service.NewTenantService(logger, pdb)
+	authzCtrl := controllers.NewAuthzController(logger, service.NewAuthzService(logger, pdb), tenantSvc, CallerFrom)
+	resolveCtrl := controllers.NewResolveController(logger, tenantSvc, CallerFrom)
 
 	// Service-to-service surface. Callers are fleet-lite-app, kaufmann-oracle and
 	// the b2b proxy, authenticating with a DIMO developer-license JWT verified
