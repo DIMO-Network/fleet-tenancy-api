@@ -61,8 +61,13 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// ethereum_address claim would be attacker-supplied and the resolver would
 	// authenticate anyone.
 	//
-	// This surface is cluster-internal by design — the chart publishes no
-	// ingress for it. The JWT is authentication in depth, not the only wall.
+	// Three layers, answering three different questions:
+	//   NewTrustedCallerGuard          is this a trusted application?
+	//   jwtware + resolver             which tenant is it acting as?
+	//   TenantService.CallerMayAccess  may that tenant see the one being asked about?
+	//
+	// The surface is also cluster-internal by design — the chart publishes no
+	// ingress for it.
 	jwtAuth := jwtware.New(jwtware.Config{
 		JWKSetURLs: []string{settings.JwtKeySetURL.String()},
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
@@ -70,7 +75,18 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 			return fiber.NewError(fiber.StatusUnauthorized, "invalid or missing JWT")
 		},
 	})
-	v1 := app.Group("/v1", jwtAuth, NewDeveloperLicenseTenantResolver(pdb, logger))
+	// Settings.Validate has already refused to boot outside local if this is
+	// empty, so a nil map here can only mean local development.
+	trustedKeys, kerr := settings.ParsedTrustedCallerKeys()
+	if kerr != nil {
+		logger.Fatal().Err(kerr).Msg("TRUSTED_CALLER_KEYS is invalid")
+	}
+	logger.Info().Int("trusted_callers", len(trustedKeys)).Msg("/v1 gate configured")
+
+	v1 := app.Group("/v1",
+		NewTrustedCallerGuard(trustedKeys, logger),
+		jwtAuth,
+		NewDeveloperLicenseTenantResolver(pdb, logger))
 
 	v1.Get("/authz", authzCtrl.GetAuthz)
 	v1.Get("/resolve/client-id/:clientId", resolveCtrl.ResolveClientID)
