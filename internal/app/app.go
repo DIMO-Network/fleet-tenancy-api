@@ -103,6 +103,18 @@ func getVersion(c *fiber.Ctx) error {
 }
 
 // ErrorHandler logs the recovered error and returns JSON rather than a string.
+//
+// Client errors log at warn, server errors at error. The level is the whole
+// point: every rejected /v1 call is a 401 or 403, and this service rejects by
+// design — an unauthenticated probe, a caller whose key is stale, a tenant
+// asking about one it may not see. Logging those at error level makes routine
+// enforcement indistinguishable from the service being broken, and feeds any
+// error-rate alerting built on this stream.
+//
+// A rejection is still recorded, at a level that says "this happened" rather
+// than "something is wrong". The security-relevant detail is logged separately
+// and deliberately by the layer that made the decision — see
+// NewTrustedCallerGuard and CallerMayAccess.
 func ErrorHandler(c *fiber.Ctx, err error, logger *zerolog.Logger) error {
 	code := fiber.StatusInternalServerError
 	var e *fiber.Error
@@ -110,8 +122,15 @@ func ErrorHandler(c *fiber.Ctx, err error, logger *zerolog.Logger) error {
 		code = e.Code
 	}
 	c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+
+	// 404 stays silent: an unrouted path is neither a fault nor worth a line
+	// per scan.
 	if code != fiber.StatusNotFound {
-		logger.Err(err).
+		ev := logger.Warn()
+		if code >= fiber.StatusInternalServerError {
+			ev = logger.Error()
+		}
+		ev.Err(err).
 			Str("httpStatusCode", strconv.Itoa(code)).
 			Str("httpMethod", c.Method()).
 			Str("httpPath", c.Path()).

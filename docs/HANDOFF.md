@@ -69,11 +69,10 @@ Note that automated sync means it deploys the moment it is registered.
 
 ### Reference: the AWS secrets
 
-The service is deployable but **not deployed**, and deliberately so: nothing
-exists in ArgoCD for it yet, so merging its chart deploys nothing. An image does
-now exist — `buildpushdev` builds one on every merge to main, and the first is
-`dimozone/fleet-tenancy-api:5b7ee68`. A `v*` tag builds the prod image and
-rewrites `values-prod.yaml`, exactly as in the sibling repos.
+Written while the service was still undeployed; kept for the secret names and
+the build mechanics, both of which still hold. (It *is* deployed now — see
+above.) `buildpushdev` builds an image on every merge to main; a `v*` tag builds
+the prod image and rewrites `values-prod.yaml`, exactly as in the sibling repos.
 
 Three secrets, at `prod/fleet-tenancy-api/`:
 
@@ -155,9 +154,12 @@ counts and an explicit `overlapping` figure.
 - ~~Decide whether `/v1` enforces caller scope~~ — **done**, `#13` / `v0.1.2`.
   See "Caller scope" below.
 - `ErrorHandler` logs every non-404 at error level, so ordinary 401s land in the
-  error stream and will feed alerting once callers integrate.
-- Nothing consumes `/v1/authz` yet — fleet-lite, kaufmann and b2b all still use
-  their own edge checks. Cutover is the next real milestone.
+  error stream and will feed alerting once callers integrate. Note `tenancy-check`
+  makes deliberate failing calls, so a run of it lands in that stream too.
+- ~~Nothing consumes `/v1/authz` yet~~ — fleet-lite and kaufmann can now
+  authenticate and are verified end to end by `tenancy-check`, but **no request
+  path calls it**: all three apps still use their own edge checks. Cutover is
+  the next real milestone.
 
 ## Done on 2026-08-06
 
@@ -337,14 +339,15 @@ and both services logged **zero errors** in the ten minutes after.
 | Merged + deployed | `#100` republish CLI `v0.6.8`, `#101` cronjob meshing `v0.6.9`, `#102` R1 step 6 |
 | Merged + deployed | `kaufmann-oracle#185` (R1) — `v1.34.0` |
 | Merged | design docs in all three repos |
-| This repo | **DEPLOYED 2026-08-10** — authenticated `/v1` (`authz`, `resolve/client-id`), chart, CI, busybox image. Backfill written but never run for real |
+| Merged + deployed | `fleet-lite-app#103` tenancy client — `v0.6.10`; `kaufmann-oracle#186` tenancy client — `v1.35.0`. Both verified in prod by `tenancy-check` |
+| This repo | **DEPLOYED 2026-08-10** — authenticated `/v1` (`authz`, `resolve/client-id`), chart, CI, busybox image. Backfill run and verified: 15 tenants, 153 users, 164 memberships |
 
 `fleet-lite-app#98` and various dependabot PRs are unrelated.
 
-**R1 is now complete through step 5.** The republish has run and been verified,
-so `DROP_FOREIGN_TENANT_GROUPS` is unblocked — it is still `false`, and flipping
-it is the next action. The trap below explains what it protects against; read it
-before flipping.
+**R1 is complete.** The republish ran and was verified, and
+`DROP_FOREIGN_TENANT_GROUPS` was flipped to `true` on 2026-08-06 (`#102`). The
+trap below is kept because it applies again to any new tenant, restored
+database, or fleet-lite install that has not republished.
 
 ## Caller scope on `/v1` — settled 2026-08-10
 
@@ -379,11 +382,44 @@ b2b has to decide whether it gets its own registered credential marked
 `is_service_caller`, or presents each operator's license per request via the
 token minter. The first is simpler; the second is tighter.
 
-## NEXT SESSION: wire `X-Tenancy-Key` into fleet-lite and b2b
+## `X-Tenancy-Key` in the callers — DEPLOYED AND VERIFIED IN PROD 2026-08-11
 
-Nothing calls `/v1` yet, so nothing is broken today. This is the prerequisite
-for cutover. The service is deployed, backfilled and gated; the callers simply
-do not send the header.
+Both callers that hold a developer license now authenticate to `/v1` in
+production. Nothing calls it on a request path yet — that is cutover, and
+deliberately still ahead. What exists is the plumbing plus a command that proves
+it works, and it has now been run against the live service.
+
+| | |
+|---|---|
+| `fleet-lite-app#103` | `v0.6.10`, image `b40b2ce` |
+| `kaufmann-oracle#186` | `v1.35.0`, image `1.35.0` |
+
+**Verified in prod, from inside each app's own pod:**
+
+- fleet-lite `tenancy-check -all` → `checked=5, failed=0`
+- kaufmann `tenancy-check -all -resolve` → `checked=4, failed=0`, and every
+  resolve reported **same tenant id on both sides** — R1's uuid unification
+  confirmed live, across both databases, rather than inferred from the migration
+- A real membership resolves correctly: the TEST owner returns `via=direct`,
+  `role=owner`, `permissions=["manage_members","manage_settings"]`,
+  `scopeGroupIds=null`. Note `manage_members`, not `manage_admin_users` — the
+  backfill's capability rename is what production actually serves
+- Layer classification confirmed against the real service: a deliberately wrong
+  key returned `layer=trusted-caller-key` / `invalid X-Tenancy-Key`, and an
+  empty key was caught before the wire as `ErrTenancyNotConfigured`
+- The service logged **exactly one** rejection across the whole exercise — the
+  deliberate one. Both apps: zero errors, zero restarts after rollout
+
+**Coverage caveat, worth resolving.** `-all` only runs tenants holding a usable
+`dimo_client_id`, so it covered **4 of kaufmann's 11** operator tenants. Some of
+the gap is known and benign (three carry `dimo_client_id = ''`, and Conexo2's
+was deliberately cleared), but that does not obviously account for all seven, and
+the prod DB tunnel was unavailable to confirm. **Check whether the remaining
+kaufmann tenants have a credential row with a NULL client id** — such a row
+holds an encrypted secret but cannot authenticate, which would mean those
+tenants are only reachable via their operator's license. That is exactly the
+effective-credential case the scope rule was built for, so it is a cutover
+question, not a wiring bug.
 
 **Target:** `http://fleet-tenancy-api.prod.svc.cluster.local:8084` (no ingress,
 by design). Every `/v1` request needs **both**:
@@ -393,53 +429,121 @@ by design). Every `/v1` request needs **both**:
 | `X-Tenancy-Key` | the app's pre-shared key |
 | `Authorization: Bearer …` | a DIMO developer-license JWT for the tenant it acts as |
 
-Keys already exist in AWS Secrets Manager, verified identical to the entries in
-the set the service verifies against:
+Keys exist in AWS Secrets Manager (re-verified 2026-08-11), matching the set the
+service checks against:
 
-| App | Secret |
+| App | Secret | Wired |
+|---|---|---|
+| fleet-lite-app | `prod/fleet-lite-app/tenancy_api_key` | ✅ |
+| kaufmann-oracle | `prod/kaufmann-oracle/tenancy_api_key` | ✅ |
+| b2b | `prod/fleet_onboard/tenancy_api_key` (also `prod/fleet-onboard-app/…`) | deferred — see below |
+
+### What landed in each repo
+
+Identical shape in both: `TENANCY_API_URL` + `TENANCY_API_KEY` in
+`config.Settings` and `settings.sample.yaml`, a `remoteRef` in the chart's
+`secret.yaml`, the URL in chart values, and `internal/gateway/tenancy_api.go`.
+
+`TenancyAPI` sends both headers and mints the JWT from the **subject tenant's
+own** license via `DimoAuthProvider.GetDeveloperJWT`, so caller and subject are
+the same tenant and `CallerMayAccess` passes on its self branch. kaufmann's
+client also has `ResolveClientID`; fleet-lite has no use for it.
+
+Neither app's boot depends on the new settings. That is a deliberate asymmetry
+with `TENANT_SECRET_ENC_KEY`, which *must* fail boot: an unset encryption key
+silently encrypts under a public constant, whereas an unset tenancy key costs a
+401 on a call neither app yet makes. The client reports it as
+`ErrTenancyNotConfigured` when something does call.
+
+**The nil-vs-empty scope trap is carried into the clients.** `ScopeGroupIDs`
+decodes `null` to nil (unrestricted) and `[]` to empty (sees nothing), and both
+clients expose `Unrestricted()` so no call site is tempted to test `len()`.
+Tests pin all four cases including an absent field. This is the same inversion
+that silently granted 131 memberships the whole fleet during the backfill.
+
+### Verifying a caller — `tenancy-check`
+
+Each repo has a subcommand that runs the real thing:
+
+```sh
+kubectl exec -n prod deploy/fleet-lite-app -- \
+  /fleet-lite-app tenancy-check -all
+kubectl exec -n prod deploy/kaufmann-oracle -- \
+  /kaufmann-oracle tenancy-check -all -resolve
+```
+
+It authenticates as each tenant holding a client id and asks `/v1/authz` about
+the zero address — a wallet that is a member of nothing, so it needs no
+knowledge of who belongs where and still exercises all three layers, answering
+`via=none`. `-tenant-id` narrows it to one; kaufmann's `-resolve` additionally
+dereferences the tenant's own client id and reports whether both sides agree on
+the uuid.
+
+**It names the layer that rejected the call.** This supersedes the old trick of
+inferring layer 1 from the *absence* of an `unrecognised trusted-caller key`
+warning in the service's logs. The service's error bodies are stable strings, so
+`gateway.TenancyError` maps them:
+
+| Layer reported | Meaning |
 |---|---|
-| fleet-lite-app | `prod/fleet-lite-app/tenancy_api_key` |
-| kaufmann-oracle | `prod/kaufmann-oracle/tenancy_api_key` |
-| b2b | `prod/fleet_onboard/tenancy_api_key` (also at `prod/fleet-onboard-app/…`) |
+| `trusted-caller-key` | `X-Tenancy-Key` absent or unrecognised (layer 1) |
+| `developer-license-jwt` | key fine; JWT bad, or its client id is registered to no tenant (layer 2) |
+| `caller-scope` | both credentials fine; that tenant is out of scope (layer 3) |
 
-### fleet-lite-app — the straightforward one
+Classification degrades to the bare status code if a message is ever reworded —
+it is a diagnostic, so a wrong guess must never be worse than no guess.
 
-1. `charts/fleet-lite-app/templates/secret.yaml`: add a `remoteRef` for
-   `{{ .Release.Namespace }}/fleet-lite-app/tenancy_api_key` →
-   `secretKey: TENANCY_API_KEY`, and a `TENANCY_API_URL` in `values-prod.yaml`.
-2. Add both to `config.Settings`, and send the header on every tenancy call.
-3. It already mints per-tenant developer JWTs via
-   `TenantService.GetDeveloperJWT(tenant)` — that is the `Authorization` header,
-   and it makes fleet-lite's caller identity the *subject* tenant, so
-   `CallerMayAccess` passes on the "self" branch with nothing further needed.
+Remember `tenancy-check` mints a developer JWT, so **it needs a meshed pod**:
+identity-api 403s unmeshed callers, which costs `DIMORedirectURI` and turns
+every mint into `Unregistered redirect_uri`. Running it in the deployment's own
+pod is meshed already; a one-off pod is not, and must also shut its proxy down.
 
-### b2b — has a real gap to close first
+### b2b — deferred, and for a better reason than the one recorded before
 
-**b2b cannot authenticate to `/v1` at all yet**, and this is separate from the
-key. Its `CLIENT_ID` `0x51dacC…` is the Login-with-DIMO *app* id, shared with
-fleet-lite, and is **not** a registered `tenant_credentials.dimo_client_id`. The
-PSK gets it past layer 1; layer 2 still rejects it.
+The earlier note framed b2b's problem as an unregistered client id needing an
+`is_service_caller` row. That understated it, and the fix was aimed at the wrong
+repo.
 
-Two ways to close it — this is a decision, not a detail:
+**b2b has no developer-license JWT at all.** `api/internal/service/dimo_jwt.go`
+(`DIMOJWTService`) has **zero call sites**, and `DIMO_CLIENT_ID` /
+`DIMO_CLIENT_SECRET` are not in `values-prod.yaml`. It is also hand-rolled —
+it generates a throwaway P-256 keypair per call and puts the public key in
+`kid`, which the DIMO JWKS cannot verify. It is dead code, not a head start.
+`CLIENT_ID 0x51dacC…` is the *frontend* Login-with-DIMO app id
+(`controllers/settings.go:47` says so), and its private key belongs to
+fleet-lite. b2b has never signed anything with it.
 
-- **Register a credential for b2b and set `is_service_caller = true`.** Simplest.
-  b2b then reaches every tenant, which is what an operator console spanning many
-  operators arguably needs. The flag exists for exactly this.
-- **Have b2b present each operator's license per request**, obtained via the
-  token minter (`GET /v1/tenants/{id}/dimo-token`, not built yet). Tighter, since
-  scope is then enforced per request, but it needs the minter first and pushes
-  work into b2b.
+**And b2b does not need one, because it authorizes nothing.** It is a BFF proxy:
+`oracleApp` forwards the *user's* JWT and `Tenant-Id` to kaufmann, and
+kaufmann's `NewAccessMiddleware` → `Access.ResolveTenantAccess` does the actual
+check. Every tenancy-shaped answer b2b serves already comes from kaufmann. Since
+kaufmann is now wired, b2b inherits the tenancy service through it with no new
+credential, no new license, and no `is_service_caller` row.
 
-Note its chart uses `prod/fleet_onboard/<name>` with an **underscore**, unlike
-the other repos — the key is stored under that convention so the new `remoteRef`
-matches its neighbours.
+So the decision is **deferred, not open**: revisit it when b2b has something to
+call directly, which means when `/user/v1` exists. At that point the options are
+unchanged (its own license + service-caller flag, or the token minter), but with
+one correction — "register a credential" also means deciding **which key b2b
+signs with**, since it holds none.
 
-### Verifying a caller once wired
+### Which b2b → kaufmann hops can retire
 
-From inside any pod, a request with a valid key but no JWT returns 401 from the
-JWT layer and logs **no** `unrecognised trusted-caller key` warning. That absence
-is how you tell layer 1 passed — the status code alone cannot, since all three
-failure modes are 401.
+Recorded so this isn't re-derived. Only one is movable today.
+
+| b2b route | kaufmann | Can move to `/v1`? |
+|---|---|---|
+| `GET /oracle/:id/permissions` | `/v1/permissions` → `Access.GetUserPermissions` | **Yes** — same question as `/v1/authz?wallet=&tenant_id=`, same `[]string` shape |
+| `GET /oracle/:id/tenants` | `/v1/tenants` | No — "list tenants for a wallet" does not exist in this service |
+| `/tenant`, `/tenant/settings`, `/user-profiles`, `/accounts/admin` | various | No — management surface, i.e. `/user/v1` |
+
+Two mismatches to handle when `/permissions` does move:
+
+- `ResolveTenantAccess` requires `access_tenants.is_admin = true`. The shared
+  model has **no equivalent** — it gates on `permissions` only. Decide which
+  capability stands in for that gate rather than assuming one does.
+- `manage_admin_users` was renamed `manage_members` and `view_all_fleets` was
+  dropped by the backfill, so a naive string comparison against today's
+  responses will disagree.
 
 ## /v1 access control — three layers, settled 2026-08-10
 
@@ -455,9 +559,10 @@ one can be rotated without a coordinated redeploy of the others. The service
 refuses to boot outside local without them — an unset value is not "no gate", it
 is an open `/v1`.
 
-**Callers still have to send the header.** fleet-lite, kaufmann and b2b each need
-their key wired into config and sent as `X-Tenancy-Key`. Nothing calls `/v1` yet,
-so nothing is broken by this; it is a prerequisite for cutover.
+**fleet-lite and kaufmann now send the header** (2026-08-11) — see the wiring
+section above. b2b does not and does not need to; it reaches tenancy answers
+through kaufmann. Nothing calls `/v1` on a request path yet, so nothing is
+broken by any of this; it is the prerequisite for cutover.
 
 ### Do not reach for linkerd policy here
 
@@ -537,20 +642,24 @@ tests over the ambiguous cases.
 
 ## Next, in order
 
-1. Flip `DROP_FOREIGN_TENANT_GROUPS` — the republish gate is satisfied, so this
-   is the last step of R1
-2. Decide whether `/v1` should enforce **caller == subject**. Authentication now
-   identifies which tenant is calling, but no handler restricts a caller to
-   asking about its own tenant, so any registered developer license can query
-   `/v1/authz` for any tenant id. Tolerable only because the surface is
-   cluster-internal with no ingress. Which way to go depends on which license
-   the callers actually present: fleet-lite holds per-tenant credentials and
-   could present the subject tenant's, which would make enforcement natural.
-   `app.CallerFrom` already exposes the caller, so it is a handler change, not
-   plumbing
+Items 1 and 2 of the previous list are done — `DROP_FOREIGN_TENANT_GROUPS` was
+flipped (`#102`, R1 complete) and caller scope was settled by `#13` / `v0.1.2`.
+What remains:
+
+1. ~~Run `tenancy-check` in prod~~ — **done 2026-08-11**, both callers green.
+   Re-run it after any credential rotation; it is the cheapest possible
+   discovery that a key or a license is wrong. Also settle the kaufmann coverage
+   caveat above (4 of 11 tenants hold a usable client id)
+2. **Cutover, one call site at a time.** `fleet-lite`'s `NewTenantMiddleware` and
+   kaufmann's `NewAccessMiddleware` are the two edge checks `/v1/authz` replaces.
+   Both read their own tables today; both have a client ready. Consider running
+   the tenancy answer alongside the local one and logging disagreements before
+   switching, since production is where the backfill's fidelity actually gets
+   tested
 3. The DIMO token minter (`GET /v1/tenants/{id}/dimo-token`), so credentials
    never leave this service
-4. `/user/v1` management surface, then the b2b operator console
+4. `/user/v1` management surface, then the b2b operator console — which is also
+   when b2b's own identity question stops being deferrable
 
 ## Running things
 
