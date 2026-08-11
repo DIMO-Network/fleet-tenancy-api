@@ -152,9 +152,8 @@ counts and an explicit `overlapping` figure.
 
 ### Still to do
 
-- Decide whether `/v1` enforces **caller == subject**. Authentication identifies
-  the caller but no handler restricts it to its own tenant. Safe only while the
-  service has no ingress. `app.CallerFrom` already exposes the caller.
+- ~~Decide whether `/v1` enforces caller scope~~ — **done**, `#13` / `v0.1.2`.
+  See "Caller scope" below.
 - `ErrorHandler` logs every non-404 at error level, so ordinary 401s land in the
   error stream and will feed alerting once callers integrate.
 - Nothing consumes `/v1/authz` yet — fleet-lite, kaufmann and b2b all still use
@@ -346,6 +345,39 @@ and both services logged **zero errors** in the ten minutes after.
 so `DROP_FOREIGN_TENANT_GROUPS` is unblocked — it is still `false`, and flipping
 it is the next action. The trap below explains what it protects against; read it
 before flipping.
+
+## Caller scope on `/v1` — settled 2026-08-10
+
+A caller may ask about a tenant when that tenant's **effective credential is the
+caller's**: itself, a child that is parented to it *and* holds no license of its
+own, or a tenant it holds a delegation over. Anything else is 403.
+
+**The rule is deliberately not "caller must equal subject".** That version passes
+today and breaks later, which is the worst failure mode available. The
+architecture's resolution rule says a tenant's effective credential is its own if
+it has one and otherwise its parent's — so an operator-managed customer holds no
+license and is reached with its operator's. Equality works only while every
+tenant is unparented, which is exactly the situation today, and fails on the
+first operator-managed customer. Scope mirrors credential resolution so there is
+one notion of whose license reaches which tenant rather than two that can
+disagree.
+
+**What this closed.** Of the eight credentials that can authenticate, four belong
+to *customer* tenants whose developer licenses are held by outside companies. Any
+of them could read any tenant's authorization data, Kaufmann's 149 memberships
+included. No ingress made that unreachable, not unauthorized.
+
+**`tenant_credentials.is_service_caller`** lifts the scope check for a shared
+proxy that legitimately acts across tenants. It is `false` for all 15 credentials
+and should stay that way unless a caller genuinely needs it; granting it is a row
+change, so it is visible.
+
+**b2b-fleet-mgr-app cannot authenticate to `/v1` at all**, and this is unrelated
+to scope. Its `CLIENT_ID` `0x51dacC…` is the Login-with-DIMO *app* id, shared
+with fleet-lite, and is not a registered tenant credential. Whoever integrates
+b2b has to decide whether it gets its own registered credential marked
+`is_service_caller`, or presents each operator's license per request via the
+token minter. The first is simpler; the second is tighter.
 
 ## Traps — things that will bite you
 
