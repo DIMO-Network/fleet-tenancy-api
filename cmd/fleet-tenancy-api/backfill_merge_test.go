@@ -105,3 +105,17 @@ func TestMergeIsIdempotent(t *testing.T) {
 	assert.Equal(t, one.scopeArg(), three.scopeArg())
 	assert.Equal(t, one.role, three.role)
 }
+
+// Regression: roleRank("") equals roleRank("member"), so a strict > comparison
+// left every plain member with an empty role. Caught by diffing production
+// before and after, not by any earlier test.
+func TestMergeFillsTheZeroRole(t *testing.T) {
+	a := &memberAccess{}
+	a.merge("member", nil, false, nil, noEmail(), noTime())
+	assert.Equal(t, "member", a.role, "a plain member must not be left with an empty role")
+
+	b := &memberAccess{}
+	b.merge("owner", nil, false, nil, noEmail(), noTime())
+	b.merge("member", nil, false, nil, noEmail(), noTime())
+	assert.Equal(t, "owner", b.role, "and filling the zero value must not let a lesser role win later")
+}

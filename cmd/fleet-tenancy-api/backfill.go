@@ -456,7 +456,10 @@ func roleRank(r string) int {
 // of groups and two group sets combine.
 func (a *memberAccess) merge(role string, perms []string, unrestricted bool, groups []string,
 	email sql.NullString, lastLogin sql.NullTime) {
-	if roleRank(role) > roleRank(a.role) {
+	// The zero value has to be filled even though it ranks the same as "member":
+	// roleRank("") == roleRank("member"), so a strict > comparison alone leaves
+	// every plain member with an empty role.
+	if a.role == "" || roleRank(role) > roleRank(a.role) {
 		a.role = role
 	}
 	if a.perms == nil {
