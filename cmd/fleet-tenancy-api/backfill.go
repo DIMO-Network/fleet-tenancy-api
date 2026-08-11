@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
@@ -263,16 +264,30 @@ func (p *backfillCmd) Execute(ctx context.Context, _ *flag.FlagSet, _ ...interfa
 		}
 	}
 
-	kUsers, kMembers, err := copyKaufmannMembers(ctx, kdb, tx)
+	// Read both sources, merge, then write once. A membership can exist in both
+	// — the Kaufmann tenant does, now that the two systems share one uuid — and
+	// whichever source wrote last would otherwise silently overwrite the other.
+	// That demoted a real kaufmann admin to role=member with no capabilities.
+	acc := map[memberKey]*memberAccess{}
+	kRows, err := readKaufmannMembers(ctx, kdb, acc)
 	if err != nil {
-		p.logger.Err(err).Msg("copy kaufmann members")
+		p.logger.Err(err).Msg("read kaufmann members")
 		return subcommands.ExitFailure
 	}
-	fUsers, fMembers, err := copyFleetLiteMembers(ctx, fdb, tx)
+	fRows, err := readFleetLiteMembers(ctx, fdb, acc)
 	if err != nil {
-		p.logger.Err(err).Msg("copy fleet-lite members")
+		p.logger.Err(err).Msg("read fleet-lite members")
 		return subcommands.ExitFailure
 	}
+	users, memberships, err := writeMembers(ctx, tx, acc)
+	if err != nil {
+		p.logger.Err(err).Msg("write memberships")
+		return subcommands.ExitFailure
+	}
+	p.logger.Info().Int("kaufmann_rows", kRows).Int("fleetlite_rows", fRows).
+		Int("merged_memberships", memberships).
+		Int("overlapping", kRows+fRows-memberships).
+		Msg("member sources merged")
 
 	if err := tx.Commit(); err != nil {
 		p.logger.Err(err).Msg("commit")
@@ -282,8 +297,8 @@ func (p *backfillCmd) Execute(ctx context.Context, _ *flag.FlagSet, _ ...interfa
 	p.logger.Info().
 		Int("operator_tenants", len(prepared)).
 		Int("selfserve_tenants", len(preparedSelfServe)).
-		Int("users", kUsers+fUsers).
-		Int("memberships", kMembers+fMembers).
+		Int("users", users).
+		Int("memberships", memberships).
 		Msg("backfill complete")
 	return subcommands.ExitSuccess
 }
@@ -365,9 +380,6 @@ func upsertUser(ctx context.Context, tx *sql.Tx, wallet string, email sql.NullSt
 	return err
 }
 
-// copyKaufmannMembers maps access_tenants to memberships. is_admin becomes the
-// 'admin' role; permissions carry across as-is since they are already the
-// capability model this service adopts.
 // mapKaufmannCapabilities translates kaufmann's stored permissions into the
 // shared model's vocabulary. Two of its strings do not survive the move:
 //
@@ -379,7 +391,7 @@ func upsertUser(ctx context.Context, tx *sql.Tx, wallet string, email sql.NullSt
 //   - view_all_fleets is deliberately absent from the shared model. It encodes
 //     the same fact as "no group restriction", which lives in scope_group_ids,
 //     and two homes for one fact have no defined resolution when they disagree.
-//     It is dropped here and expressed as scope_group_ids = NULL by the caller.
+//     It is dropped here and expressed as scope_group_ids = NULL.
 func mapKaufmannCapabilities(perms []string) []string {
 	out := make([]string, 0, len(perms))
 	seen := map[string]bool{}
@@ -398,28 +410,113 @@ func mapKaufmannCapabilities(perms []string) []string {
 	return out
 }
 
-func copyKaufmannMembers(ctx context.Context, kdb *sql.DB, tx *sql.Tx) (users, members int, err error) {
-	// scope_group_ids is the reason access_fleet_groups is joined here rather
-	// than ignored. In kaufmann a member sees every fleet only when they hold
-	// view_all_fleets; otherwise they see exactly the groups assigned to them,
-	// which is frequently none at all. NULL means unrestricted in this schema,
-	// so writing NULL for everyone silently promotes every restricted member to
-	// full fleet access. Measured against production on 2026-08-10 that was 131
-	// of 159 memberships.
-	//
-	// The distinction that carries the meaning:
-	//   view_all_fleets        -> NULL          (unrestricted)
-	//   groups assigned        -> {those ids}   (restricted to them)
-	//   no view_all, no groups -> {}            (restricted to nothing)
-	//
-	// An empty array is emphatically not NULL. AuthzResult.Unrestricted() tests
-	// for nil, so {} is "sees nothing" and NULL is "sees everything" — the exact
-	// inversion this migration has to get right.
-	//
-	// access_fleet_groups is keyed by wallet alone, so it is joined through
-	// fleet_groups to pin each row to the tenant being copied. Group ids became
-	// tenant-scoped in R1, so they drop straight into scope_group_ids.
-	rows, qerr := kdb.QueryContext(ctx, `
+// memberKey identifies one membership. Wallets are checksummed before use so
+// the two sources, which disagree on casing, land on the same key.
+type memberKey struct {
+	tenantID string
+	wallet   string
+}
+
+// memberAccess is one membership merged across every source that mentions it.
+//
+// Merging happens here, in memory, rather than through ON CONFLICT in the
+// database. Doing it in SQL would make the result depend on which source
+// happened to be written last, and — worse for a tool that is meant to be
+// re-runnable — a union performed in the upsert would accumulate across runs
+// and could never shed a capability that had been removed at the source. Built
+// this way, a re-run converges on whatever the sources currently say.
+type memberAccess struct {
+	role         string
+	perms        map[string]bool
+	unrestricted bool // any source saying "all fleets" wins
+	groups       map[string]bool
+	email        sql.NullString
+	lastLogin    sql.NullTime
+}
+
+// roleRank orders the display labels so a merge keeps the most privileged one.
+// role is only a label — permissions is what authorization reads — but showing
+// someone as a "member" while they hold owner capabilities is a confusing lie.
+func roleRank(r string) int {
+	switch r {
+	case "owner":
+		return 3
+	case "admin":
+		return 2
+	default:
+		return 1
+	}
+}
+
+// merge folds one source's view of a membership into the accumulated one.
+//
+// The rule is "no access is removed by migrating", which is the same principle
+// that keeps stranded fleet-lite tenants rather than dropping them. Capabilities
+// union; scope takes the more permissive side, where unrestricted beats any set
+// of groups and two group sets combine.
+func (a *memberAccess) merge(role string, perms []string, unrestricted bool, groups []string,
+	email sql.NullString, lastLogin sql.NullTime) {
+	if roleRank(role) > roleRank(a.role) {
+		a.role = role
+	}
+	if a.perms == nil {
+		a.perms = map[string]bool{}
+	}
+	for _, p := range perms {
+		a.perms[p] = true
+	}
+	if unrestricted {
+		a.unrestricted = true
+	}
+	if a.groups == nil {
+		a.groups = map[string]bool{}
+	}
+	for _, g := range groups {
+		a.groups[g] = true
+	}
+	if !a.email.Valid && email.Valid {
+		a.email = email
+	}
+	if lastLogin.Valid && (!a.lastLogin.Valid || lastLogin.Time.After(a.lastLogin.Time)) {
+		a.lastLogin = lastLogin
+	}
+}
+
+// permissionsJSON renders the merged capabilities, sorted so a re-run produces
+// byte-identical rows and diffs stay readable.
+func (a *memberAccess) permissionsJSON() (string, error) {
+	out := make([]string, 0, len(a.perms))
+	for p := range a.perms {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	b, err := json.Marshal(out)
+	return string(b), err
+}
+
+// scopeArg renders scope_group_ids: nil for unrestricted, otherwise the sorted
+// union. Note that "no groups and not unrestricted" is an empty array, not nil —
+// nil would silently mean the opposite.
+func (a *memberAccess) scopeArg() interface{} {
+	if a.unrestricted {
+		return nil
+	}
+	out := make([]string, 0, len(a.groups))
+	for g := range a.groups {
+		out = append(out, g)
+	}
+	sort.Strings(out)
+	return pq.Array(out)
+}
+
+// readKaufmannMembers reads access_tenants, mapping capabilities and resolving
+// group scope.
+//
+// access_fleet_groups is keyed by wallet alone, so it is joined through
+// fleet_groups to pin each row to the tenant being read. Group ids became
+// tenant-scoped in R1, so they drop straight into scope_group_ids.
+func readKaufmannMembers(ctx context.Context, kdb *sql.DB, acc map[memberKey]*memberAccess) (int, error) {
+	rows, err := kdb.QueryContext(ctx, `
 		SELECT at.tenant_id, at.wallet, at.permissions::text, at.is_admin, up.email,
 		       COALESCE(
 		         (SELECT array_agg(g.fleet_group_id ORDER BY g.fleet_group_id)
@@ -429,96 +526,116 @@ func copyKaufmannMembers(ctx context.Context, kdb *sql.DB, tx *sql.Tx) (users, m
 		         ARRAY[]::text[]) AS scope_group_ids
 		  FROM kaufmann_oracle.access_tenants at
 		  LEFT JOIN kaufmann_oracle.user_profiles up ON up.wallet = at.wallet`)
-	if qerr != nil {
-		return 0, 0, qerr
+	if err != nil {
+		return 0, err
 	}
 	defer func() { _ = rows.Close() }()
+
+	n := 0
 	for rows.Next() {
-		var tenantID, wallet, perms string
+		var tenantID, wallet, permsRaw string
 		var isAdmin bool
 		var email sql.NullString
 		var scope pq.StringArray
-		if err := rows.Scan(&tenantID, &wallet, &perms, &isAdmin, &email, &scope); err != nil {
-			return users, members, err
+		if err := rows.Scan(&tenantID, &wallet, &permsRaw, &isAdmin, &email, &scope); err != nil {
+			return n, err
 		}
-		if err := upsertUser(ctx, tx, wallet, email); err != nil {
-			return users, members, err
+
+		var srcPerms []string
+		if uerr := json.Unmarshal([]byte(permsRaw), &srcPerms); uerr != nil {
+			srcPerms = nil
 		}
-		users++
+		unrestricted := false
+		for _, p := range srcPerms {
+			if p == "view_all_fleets" {
+				unrestricted = true
+				break
+			}
+		}
 		role := "member"
 		if isAdmin {
 			role = "admin"
 		}
 
-		var srcPerms []string
-		if uerr := json.Unmarshal([]byte(perms), &srcPerms); uerr != nil {
-			srcPerms = nil
+		k := memberKey{tenantID: tenantID, wallet: common.HexToAddress(wallet).Hex()}
+		if acc[k] == nil {
+			acc[k] = &memberAccess{}
 		}
-		viewAll := false
-		for _, p := range srcPerms {
-			if p == "view_all_fleets" {
-				viewAll = true
-				break
-			}
-		}
-		mapped, merr := json.Marshal(mapKaufmannCapabilities(srcPerms))
-		if merr != nil {
-			return users, members, merr
-		}
-
-		// NULL only when kaufmann actually said "all fleets".
-		var scopeArg interface{}
-		if viewAll {
-			scopeArg = nil
-		} else {
-			scopeArg = pq.Array([]string(scope))
-		}
-
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO memberships (tenant_id, wallet, role, permissions, scope_group_ids)
-			VALUES ($1, $2, $3, $4::jsonb, $5::text[])
-			ON CONFLICT (tenant_id, wallet) DO UPDATE SET
-				role = EXCLUDED.role,
-				permissions = EXCLUDED.permissions,
-				scope_group_ids = EXCLUDED.scope_group_ids,
-				updated_at = NOW()`,
-			tenantID, common.HexToAddress(wallet).Hex(), role, string(mapped), scopeArg); err != nil {
-			return users, members, err
-		}
-		members++
+		acc[k].merge(role, mapKaufmannCapabilities(srcPerms), unrestricted, []string(scope), email, sql.NullTime{})
+		n++
 	}
-	return users, members, rows.Err()
+	return n, rows.Err()
 }
 
-// copyFleetLiteMembers maps tenant_users to memberships. fleet-lite's owner/member
-// role becomes owner/member here, and its owner-only gates map to the two
-// capabilities that cover them; allowed_group_ids becomes scope_group_ids.
-func copyFleetLiteMembers(ctx context.Context, fdb *sql.DB, tx *sql.Tx) (users, members int, err error) {
-	rows, qerr := fdb.QueryContext(ctx, `
+// readFleetLiteMembers reads tenant_users. fleet-lite's only owner-gated
+// operations are member management and tenant settings, so an owner maps to
+// exactly those two capabilities. A NULL allowed_group_ids means unrestricted,
+// matching this schema.
+func readFleetLiteMembers(ctx context.Context, fdb *sql.DB, acc map[memberKey]*memberAccess) (int, error) {
+	rows, err := fdb.QueryContext(ctx, `
 		SELECT tenant_id, wallet, role, email, allowed_group_ids, last_login_at
 		  FROM tenant_users`)
-	if qerr != nil {
-		return 0, 0, qerr
+	if err != nil {
+		return 0, err
 	}
 	defer func() { _ = rows.Close() }()
+
+	n := 0
 	for rows.Next() {
 		var tenantID, wallet, role string
 		var email sql.NullString
-		var allowed sql.NullString // text[] rendered by lib/pq
+		var allowed pq.StringArray
 		var lastLogin sql.NullTime
 		if err := rows.Scan(&tenantID, &wallet, &role, &email, &allowed, &lastLogin); err != nil {
-			return users, members, err
+			return n, err
 		}
-		if err := upsertUser(ctx, tx, wallet, email); err != nil {
-			return users, members, err
-		}
-		users++
 
-		// fleet-lite's only owner-gated operations are member management and
-		// tenant settings, so an owner maps to exactly those two capabilities.
-		perms := `[]`
+		var perms []string
 		if role == "owner" {
-			perms = `["manage_members","manage_settings"]`
+			perms = []string{models.CapManageMembers, models.CapManageSettings}
+		}
+		// lib/pq scans a NULL text[] as a nil slice; nil means unrestricted.
+		unrestricted := allowed == nil
+
+		k := memberKey{tenantID: tenantID, wallet: common.HexToAddress(wallet).Hex()}
+		if acc[k] == nil {
+			acc[k] = &memberAccess{}
+		}
+		acc[k].merge(role, perms, unrestricted, []string(allowed), email, lastLogin)
+		n++
+	}
+	return n, rows.Err()
+}
+
+// writeMembers persists the merged set. Users are written first so the
+// membership rows have something to reference.
+func writeMembers(ctx context.Context, tx *sql.Tx, acc map[memberKey]*memberAccess) (users, members int, err error) {
+	// Deterministic order keeps a re-run's logs and lock ordering stable.
+	keys := make([]memberKey, 0, len(acc))
+	for k := range acc {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].tenantID != keys[j].tenantID {
+			return keys[i].tenantID < keys[j].tenantID
+		}
+		return keys[i].wallet < keys[j].wallet
+	})
+
+	seenWallet := map[string]bool{}
+	for _, k := range keys {
+		a := acc[k]
+		if !seenWallet[k.wallet] {
+			if err := upsertUser(ctx, tx, k.wallet, a.email); err != nil {
+				return users, members, err
+			}
+			seenWallet[k.wallet] = true
+			users++
+		}
+
+		permsJSON, jerr := a.permissionsJSON()
+		if jerr != nil {
+			return users, members, jerr
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO memberships (tenant_id, wallet, role, permissions, scope_group_ids, last_login_at)
@@ -529,20 +646,12 @@ func copyFleetLiteMembers(ctx context.Context, fdb *sql.DB, tx *sql.Tx) (users, 
 				scope_group_ids = EXCLUDED.scope_group_ids,
 				last_login_at = GREATEST(memberships.last_login_at, EXCLUDED.last_login_at),
 				updated_at = NOW()`,
-			tenantID, common.HexToAddress(wallet).Hex(), role, perms,
-			nullableArray(allowed), nullableTime(lastLogin)); err != nil {
+			k.tenantID, k.wallet, a.role, permsJSON, a.scopeArg(), nullableTime(a.lastLogin)); err != nil {
 			return users, members, err
 		}
 		members++
 	}
-	return users, members, rows.Err()
-}
-
-func nullableArray(v sql.NullString) interface{} {
-	if !v.Valid {
-		return nil
-	}
-	return v.String
+	return users, members, nil
 }
 
 func nullableTime(v sql.NullTime) interface{} {
