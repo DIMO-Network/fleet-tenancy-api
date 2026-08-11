@@ -1,8 +1,10 @@
 # Agent Guidelines — fleet-tenancy-api
 
-**Status: not yet deployed.** The schema is migrated, `/v1` is authenticated and
-serves `authz` and `resolve/client-id`, and there is a chart. The rest of the
-surface in the design spec is not built.
+**Status: deployed to prod (2026-08-10), nothing calls it yet.** The schema is
+migrated and backfilled, `/v1` is gated by three layers and serves `authz` and
+`resolve/client-id`, and fleet-lite and kaufmann can authenticate to it. No
+caller's request path uses it — cutover is still ahead. The rest of the surface
+in the design spec (`/v1/tenants`, the token minter, `/user/v1`) is not built.
 
 ## What this service is
 
