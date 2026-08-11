@@ -545,6 +545,56 @@ Two mismatches to handle when `/permissions` does move:
   dropped by the backfill, so a naive string comparison against today's
   responses will disagree.
 
+## Reconciliation — RUN 2026-08-11, and it is clean
+
+**163 memberships compared against `/v1/authz`, zero narrowings.** This is the
+evidence cutover was waiting on: the backfilled data agrees with both source
+systems everywhere it matters.
+
+| | fleet-lite | kaufmann |
+|---|---|---|
+| checked | 10 | 153 |
+| agree | 6 | 149 |
+| remote-extra | 4 | 4 |
+| **differ** | **0** | **0** |
+| **missing-remote** | **0** | **0** |
+
+`differ` and `missing-remote` are the two that matter — remote granting *less*
+than local, or no access at all. Both are zero, so **nobody loses access at
+cutover**.
+
+All 8 `remote-extra` rows are in the **Kaufmann tenant**, the one that exists in
+both source systems, and every one is explained by the merge:
+
+- fleet-lite's owners gain `onboard_vehicles` and `reports` from kaufmann's side
+- kaufmann's admins gain `manage_settings` from fleet-lite's side (and read as
+  `owner` rather than `admin`, the higher role label winning)
+- one wallet gains the group `…_gerencia-primera-linea`, which only fleet-lite
+  asserted
+
+That is the merge working as designed, not drift. It is also why the comparison
+is deliberately asymmetric: had `remote-extra` been treated as failure, the
+overlap would have produced 8 false failures and the command would have been
+ignored — which is how a real narrowing gets missed.
+
+### Why this was a batch job and not a shadow read
+
+The conventional approach is to call `/v1/authz` alongside the local check in
+the request path and log disagreements until confidence accumulates. **That
+produces nothing here**, because the product has no users yet: shadow logging
+only covers paths traffic actually takes. The batch walk covered every row
+immediately instead. If a shadow pass is ever wanted, it is worth remembering it
+measures traffic, not data.
+
+Re-run both after any membership change, and before cutting a call site over:
+
+```sh
+kubectl exec -n prod deploy/fleet-lite-app  -- /fleet-lite-app  tenancy-diff
+kubectl exec -n prod deploy/kaufmann-oracle -- /kaufmann-oracle tenancy-diff
+```
+
+Both exit non-zero on any `differ` or `missing-remote`.
+
 ## /v1 access control — three layers, settled 2026-08-10
 
 | Layer | Question | Mechanism |
@@ -650,12 +700,15 @@ What remains:
    Re-run it after any credential rotation; it is the cheapest possible
    discovery that a key or a license is wrong. Also settle the kaufmann coverage
    caveat above (4 of 11 tenants hold a usable client id)
-2. **Cutover, one call site at a time.** `fleet-lite`'s `NewTenantMiddleware` and
-   kaufmann's `NewAccessMiddleware` are the two edge checks `/v1/authz` replaces.
-   Both read their own tables today; both have a client ready. Consider running
-   the tenancy answer alongside the local one and logging disagreements before
-   switching, since production is where the backfill's fidelity actually gets
-   tested
+2. **Cutover, one call site at a time — now unblocked.** `fleet-lite`'s
+   `NewTenantMiddleware` and kaufmann's `NewAccessMiddleware` are the two edge
+   checks `/v1/authz` replaces. Both read their own tables today, both have a
+   client ready, and the reconciliation above says the data agrees. Do it behind
+   a flag defaulting off, flip one app at a time, and re-run `tenancy-diff`
+   first — it is the cheapest possible pre-flight. Note the merge means cutover
+   *widens* access for 8 Kaufmann-tenant memberships; that is the intended
+   consequence of unifying the two systems, but it should be a decision someone
+   makes knowingly rather than discovers
 3. The DIMO token minter (`GET /v1/tenants/{id}/dimo-token`), so credentials
    never leave this service
 4. `/user/v1` management surface, then the b2b operator console — which is also
