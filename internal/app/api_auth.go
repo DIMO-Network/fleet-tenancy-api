@@ -76,11 +76,11 @@ func NewDeveloperLicenseTenantResolver(pdb *db.Store, logger *zerolog.Logger) fi
 func lookupCallerByClientID(ctx context.Context, pdb *db.Store, clientID string) (*models.CallerTenant, error) {
 	var caller models.CallerTenant
 	err := pdb.DBS().Reader.QueryRowContext(ctx,
-		`SELECT t.id, t.name, t.kind, t.status
+		`SELECT t.id, t.name, t.kind, t.status, tc.is_service_caller
 		   FROM tenant_credentials tc
 		   JOIN tenants t ON t.id = tc.tenant_id
 		  WHERE lower(tc.dimo_client_id) = lower($1)`,
-		clientID).Scan(&caller.TenantID, &caller.Name, &caller.Kind, &caller.Status)
+		clientID).Scan(&caller.TenantID, &caller.Name, &caller.Kind, &caller.Status, &caller.IsService)
 	if err != nil {
 		return nil, err
 	}

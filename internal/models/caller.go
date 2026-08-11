@@ -16,6 +16,11 @@ type CallerTenant struct {
 
 	// ClientID is the license as presented, before case normalisation.
 	ClientID string `json:"clientId"`
+
+	// IsService lifts the scope check: this credential may ask about any
+	// tenant, not only those whose effective credential is its own. Intended
+	// for a shared proxy such as b2b-fleet-mgr-app. Default false.
+	IsService bool `json:"isService"`
 }
 
 // TenantRef is the public shape of a tenant lookup — what

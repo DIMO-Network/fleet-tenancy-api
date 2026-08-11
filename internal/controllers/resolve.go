@@ -11,10 +11,11 @@ import (
 type ResolveController struct {
 	logger  *zerolog.Logger
 	tenants *service.TenantService
+	caller  CallerResolver
 }
 
-func NewResolveController(logger *zerolog.Logger, tenants *service.TenantService) *ResolveController {
-	return &ResolveController{logger: logger, tenants: tenants}
+func NewResolveController(logger *zerolog.Logger, tenants *service.TenantService, caller CallerResolver) *ResolveController {
+	return &ResolveController{logger: logger, tenants: tenants, caller: caller}
 }
 
 // ResolveClientID — GET /v1/resolve/client-id/:clientId
@@ -40,6 +41,22 @@ func (c *ResolveController) ResolveClientID(ctx *fiber.Ctx) error {
 		}
 		c.logger.Err(err).Msg("resolve client id")
 		return fiber.NewError(fiber.StatusInternalServerError, "tenant lookup failed")
+	}
+
+	// The same scope rule applies to the tenant this id resolves to, so the
+	// endpoint cannot be used to enumerate other tenants by trying client ids.
+	// Resolving an arbitrary third party's license is inherently a service
+	// operation — that is what the service-caller flag is for.
+	caller := c.caller(ctx)
+	ok, serr := c.tenants.CallerMayAccess(ctx.Context(), caller, ref.TenantID)
+	if serr != nil {
+		c.logger.Err(serr).Msg("caller scope check")
+		return fiber.NewError(fiber.StatusInternalServerError, "tenant lookup failed")
+	}
+	if !ok {
+		c.logger.Warn().Str("subject_tenant", ref.TenantID).
+			Msg("/v1/resolve: caller asked about a tenant outside its scope")
+		return fiber.NewError(fiber.StatusForbidden, "caller may not query this tenant")
 	}
 	return ctx.JSON(ref)
 }
