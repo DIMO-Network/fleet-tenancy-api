@@ -379,6 +379,38 @@ b2b has to decide whether it gets its own registered credential marked
 `is_service_caller`, or presents each operator's license per request via the
 token minter. The first is simpler; the second is tighter.
 
+## /v1 access control — three layers, settled 2026-08-10
+
+| Layer | Question | Mechanism |
+|---|---|---|
+| 1 | is this a trusted application? | `X-Tenancy-Key` pre-shared key (`v0.1.3`) |
+| 2 | which tenant is it acting as? | developer-license JWT, DIMO JWKS |
+| 3 | may that tenant see the one asked about? | `CallerMayAccess` (`v0.1.2`) |
+
+Keys live at `prod/fleet-tenancy-api/trusted_caller_keys` as `name:key,…`, with
+each caller's own copy at `prod/<app>/tenancy_api_key`. One key per caller, so
+one can be rotated without a coordinated redeploy of the others. The service
+refuses to boot outside local without them — an unset value is not "no gate", it
+is an open `/v1`.
+
+**Callers still have to send the header.** fleet-lite, kaufmann and b2b each need
+their key wired into config and sent as `X-Tenancy-Key`. Nothing calls `/v1` yet,
+so nothing is broken by this; it is a prerequisite for cutover.
+
+### Do not reach for linkerd policy here
+
+An `AuthorizationPolicy` was attempted first and **took readiness probes down
+across the whole `prod` namespace for about a minute**. The namespace-wide
+`Server/http-port` has an **empty `podSelector`** — it selects every pod in the
+namespace — and in linkerd, once any `HTTPRoute` is attached to a `Server`,
+requests matching no route get a **404 from the proxy**. So a route scoped to
+`/v1` made `/health` 404 for every service in `prod`, not just this one.
+
+A server-side dry run passed: it validates schema and conflicts, not blast
+radius. If mesh policy is ever revisited, this service must first be moved off
+the shared Server by renaming its container port, and the policy attached to a
+dedicated `Server` with a `podSelector` — not to an `HTTPRoute` on the shared one.
+
 ## Traps — things that will bite you
 
 **`DROP_FOREIGN_TENANT_GROUPS` — the republish gate, now satisfied.** Enabling it
