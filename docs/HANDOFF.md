@@ -545,6 +545,86 @@ Two mismatches to handle when `/permissions` does move:
   dropped by the backfill, so a naive string comparison against today's
   responses will disagree.
 
+## CUTOVER COMPLETE — 2026-08-11
+
+**fleet-tenancy-api is now the only source of "may this wallet act in this
+tenant".** Both callers authorize from `/v1/authz` in production, the flag that
+guarded the switch is gone, and so are their local authorization paths.
+
+| | Cutover | Flag removed |
+|---|---|---|
+| fleet-lite-app | `#105` `v0.7.0` | `#107` `v0.7.1` |
+| kaufmann-oracle | `#188` `v1.37.0` | `#190` `v1.38.0` |
+
+Shipped flag-off, flipped by a chart-only change, verified, then the flag and
+the local path were deleted together. Leaving both would have meant two answers
+to one question — and a fallback consulted only during an incident is a
+fallback nobody has verified.
+
+**What the middlewares do now.** `NewTenantMiddleware` and
+`NewAccessMiddleware` load the tenant (needed to authenticate *as* it), call
+`/v1/authz`, and refuse anything that is not `via=direct` with membership. Both
+fail **closed** on a tenancy outage — 503, not 403, because a dependency
+failure is not an authorization decision. Answers are cached for the advertised
+60s, so revocation is eventually consistent by that window; failures are never
+cached, so a fixed key works immediately.
+
+**fleet-lite additionally refuses `via=delegation`.** A delegation is an
+operator's management right, never a fleet-lite session: operator staff are
+b2b-only and there is no impersonation. That is why `Via` is checked and not
+`Member` alone.
+
+### The is_admin replacement — the one judgement call
+
+kaufmann's middleware required `access_tenants.is_admin`, and the shared model
+has **no equivalent**: it holds capabilities, and role is a display label that
+must never be an authorization input.
+
+It now gates on **membership plus at least one capability**. That was chosen by
+measurement, not taste: it reproduces `is_admin` for **151 of 153** production
+memberships. The alternative — gate on membership alone — would have admitted
+**120** currently locked-out members to the operator API on cutover day.
+
+Two memberships still disagree, both in the Kaufmann tenant:
+
+| Wallet | Local | Effect |
+|---|---|---|
+| `0x27268E98DEc237158e0354a9bDEa5Cf9697152D5` | admin, no capabilities | **lost** access |
+| `0xd3D2B67ea1F654A34209CD39c080BB425089809e` | member, has `onboard_vehicles`,`reports` | **gained** access |
+
+Both are fixable by editing that row's capabilities in `memberships`, and
+neither was fixed — the prod DB tunnel was unavailable (`ssh
+dimo-database-prod` returns `Permission denied (publickey)`). **Do this before
+users return.** The first is somebody who can currently see nothing.
+
+The capability rule is a proxy. The proper fix is per-endpoint capability checks
+— `onboard_vehicles` for onboarding, `reports` for reports — which is the shape
+the shared model is actually built for, and which would make the gate exact
+rather than approximate.
+
+### How the cutover was proven live
+
+Neither app had user traffic, so "watch it work" was not available. Two probes
+established it instead, using a developer JWT minted by `get-dimo-token`:
+
+- **Known tenant, non-member wallet → 403.** The tenancy service answered.
+- **Unknown tenant uuid → 500, where the local path gives 403.** The local path
+  checks the wallet before ever loading the tenant; the tenancy path must load
+  the tenant first to authenticate as it. That difference is only possible if
+  the tenancy path is the one running.
+
+That second probe was also a bug: an unknown `Tenant-Id` should never have been
+a 500. Both apps now answer 403 — the caller named something that does not
+exist, which is not a server fault. 403 rather than 404 so a caller cannot probe
+which tenant ids are real.
+
+### Still logging ordinary 403s at error level
+
+fleet-lite's `ErrorHandler` has the same problem this service had before
+`v0.1.4`: a non-member's 403 lands in the error stream. Now that 403 is the
+normal answer for a non-member, that will feed error-rate alerting. kaufmann's
+equivalent should be checked too. One-line fix, same shape as `#15` here.
+
 ## Reconciliation — RUN 2026-08-11, and it is clean
 
 **163 memberships compared against `/v1/authz`, zero narrowings.** This is the
@@ -700,15 +780,14 @@ What remains:
    Re-run it after any credential rotation; it is the cheapest possible
    discovery that a key or a license is wrong. Also settle the kaufmann coverage
    caveat above (4 of 11 tenants hold a usable client id)
-2. **Cutover, one call site at a time — now unblocked.** `fleet-lite`'s
-   `NewTenantMiddleware` and kaufmann's `NewAccessMiddleware` are the two edge
-   checks `/v1/authz` replaces. Both read their own tables today, both have a
-   client ready, and the reconciliation above says the data agrees. Do it behind
-   a flag defaulting off, flip one app at a time, and re-run `tenancy-diff`
-   first — it is the cheapest possible pre-flight. Note the merge means cutover
-   *widens* access for 8 Kaufmann-tenant memberships; that is the intended
-   consequence of unifying the two systems, but it should be a decision someone
-   makes knowingly rather than discovers
+2. ~~Cutover~~ — **done 2026-08-11**, both apps, flag removed. Two follow-ups it
+   left behind, in priority order:
+   - **Fix the two Kaufmann-tenant memberships** listed above, one of whom lost
+     access. Needs the prod DB tunnel
+   - **Move kaufmann off the capability proxy** to per-endpoint capability
+     checks, which makes the `is_admin` replacement exact
+   - **Stop logging expected 4xx at error level in fleet-lite** (and check
+     kaufmann), the same fix as `#15` here
 3. The DIMO token minter (`GET /v1/tenants/{id}/dimo-token`), so credentials
    never leave this service
 4. `/user/v1` management surface, then the b2b operator console — which is also
