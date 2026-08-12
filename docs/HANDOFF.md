@@ -626,6 +626,78 @@ fleet-lite's `ErrorHandler` has the same problem this service had before
 normal answer for a non-member, that will feed error-rate alerting. kaufmann's
 equivalent should be checked too. One-line fix, same shape as `#15` here.
 
+## The write half was never cut over — FIXED 2026-08-12
+
+Cutover moved the **read**. Every membership **write** stayed in kaufmann's
+`access_tenants`, which nothing consults any more. So `POST /v1/accounts/admin/grant`
+wrote a row into a table that no longer decides anything, `NewAccessMiddleware`
+asked this service whether that wallet could act, and the answer was no. **The
+grant reported success and conferred nothing.** Nothing reconciles the two on a
+schedule — `backfill` is a one-off command and the chart ships no cronjob — so
+the divergence only ever grew.
+
+The reconciliation below was clean because it ran on 2026-08-11, *before* any
+post-cutover grant. It is not evidence the two stay converged.
+
+**What landed.** `PUT` and `DELETE /v1/tenants/{id}/members/{wallet}`, behind the
+same three layers as the rest of `/v1`, and kaufmann now calls them from
+`GrantAdminAccess`, `UpdateAdminAccess`, `RevokeAdminAccess` and the customer-user
+path in `CreateAccount`.
+
+Four things worth knowing about how it is wired:
+
+- **A failed tenancy write fails the request** (502), rather than logging and
+  returning 200. Returning success is what produced the original problem.
+- **Grants write locally first, revocations write here first.** Either order can
+  fail half-way; these are the orders where a half-failure leaves the person
+  with *less* access than intended. Both writes are idempotent, so a retry
+  converges.
+- **Revoking empties the membership rather than deleting it.** Deleting would
+  also end that person's fleet-lite access, and the endpoint revokes admin
+  rights in the operator console, not the person. A membership with no
+  capabilities already fails kaufmann's "member plus at least one capability"
+  gate — exactly what `is_admin = false` used to mean.
+- **`scopeGroupIds` is `json.RawMessage` end to end**, and an absent field is a
+  400. As a `[]string`, "omitted" and "explicitly unrestricted" both arrive as
+  nil, so a caller that forgot the field would grant the whole fleet. That is
+  the inversion that handed 131 memberships a 524-vehicle fleet during the
+  backfill; it is now the one input the service refuses to guess at.
+
+**DEPLOY THIS SERVICE FIRST.** kaufmann now fails a grant when the tenancy write
+fails, and an unrecognised route is a 404, which is a failure. So shipping
+kaufmann against a tenancy service that lacks these endpoints turns **every**
+grant, update and revoke into a 502 until the other side catches up. Same shape
+as the chart-before-image breakage during the `#97` rollout, and the same rule:
+if a change needs both sides, land the dependency first.
+
+**A second bug fell out of this.** `RevokeAdminAccess` only ever set
+`is_admin = false` and left `permissions` intact. That was harmless while the
+gate *was* `is_admin` — but since cutover the gate is "holds at least one
+capability", so **a revoked admin kept getting in**, and `Access.CheckPermission`
+kept answering yes for every capability they held. Revocation now clears
+`permissions` too. This is a behaviour change to an existing endpoint, made
+deliberately.
+
+### Are kaufmann's old tenancy tables gone? No, and they can't be yet
+
+Asked and answered on 2026-08-12. `tenants`, `access_tenants`,
+`access_fleet_groups` and `user_profiles` are all still live, and dropping any of
+them today would break the oracle:
+
+| Table | Still doing what |
+|---|---|
+| `access_tenants` | Backs `Access.CheckPermission` — the per-endpoint capability checks in `vehicle.go`, `fleet_vehicles.go`, `account.go` and `reports/worker.go`. Also the `/accounts/admin*` read path |
+| `access_fleet_groups` | Backs `Access.GetUserFleetAccess`, the group filter on fleet vehicle listing and reports |
+| `user_profiles` | Live feature (`/v1/user-profiles`), plus the government-id columns that stay here by design |
+| `tenants` | Keeps oracle-specific columns (Kore, command password, signer) and is loaded to authenticate *as* the tenant |
+
+Only the **gate** moved to `/v1/authz`. The capability checks are still local,
+which is the "move kaufmann off the capability proxy" item below — that is the
+work that frees `access_tenants`, and `access_fleet_groups` goes with it. Note
+that table is keyed by wallet alone with no tenant column, so a member's group
+scope is currently shared across every tenant they belong to; the shared model
+fixes that by putting scope on the membership.
+
 ## Reconciliation — RUN 2026-08-11, and it is clean
 
 **163 memberships compared against `/v1/authz`, zero narrowings.** This is the
@@ -813,8 +885,10 @@ What remains:
    Re-run it after any credential rotation; it is the cheapest possible
    discovery that a key or a license is wrong. Also settle the kaufmann coverage
    caveat above (4 of 11 tenants hold a usable client id)
-2. ~~Cutover~~ — **done 2026-08-11**, both apps, flag removed. What it left
-   behind, in priority order:
+2. ~~Cutover~~ — **done 2026-08-11**, both apps, flag removed. The write half
+   was missed and was fixed on 2026-08-12 — see "The write half was never cut
+   over" above; it is not deployed yet, and **`tenancy-diff` should be re-run
+   right after it is**. What cutover left behind, in priority order:
    - **Stop logging expected 4xx at error level in fleet-lite and kaufmann.**
      Both still do `logger.Err` for every non-404, and 403 is now the normal
      answer for a non-member, so this will feed error-rate alerting. Same
