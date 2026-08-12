@@ -63,6 +63,10 @@ anything.
 
 ## Design docs
 
-Gitignored for now — they document unresolved weaknesses in the systems being
-replaced. They live at `fleet-lite-app/docs/operator-tenancy/` until those are
-fixed. Read them before changing the schema.
+[`docs/operator-tenancy/`](docs/operator-tenancy/) — the full design set, nine
+locked decisions, published 2026-08-12. Read them before changing the schema.
+
+They were held back while they documented two unfixed weaknesses (the
+fleet-group id collision and fleet-lite's tenant-credential encryption). Both
+are fixed and deployed, so the reason expired. An identical copy has been
+public in `fleet-lite-app` since that repo's `#96` regardless.
