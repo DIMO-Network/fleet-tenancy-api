@@ -50,6 +50,7 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	tenantSvc := service.NewTenantService(logger, pdb)
 	authzCtrl := controllers.NewAuthzController(logger, service.NewAuthzService(logger, pdb), tenantSvc, CallerFrom)
 	resolveCtrl := controllers.NewResolveController(logger, tenantSvc, CallerFrom)
+	membersCtrl := controllers.NewMembersController(logger, service.NewMemberService(logger, pdb), tenantSvc, CallerFrom)
 
 	// Service-to-service surface. Callers are fleet-lite-app, kaufmann-oracle and
 	// the b2b proxy, authenticating with a DIMO developer-license JWT verified
@@ -90,6 +91,13 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 
 	v1.Get("/authz", authzCtrl.GetAuthz)
 	v1.Get("/resolve/client-id/:clientId", resolveCtrl.ResolveClientID)
+
+	// Membership writes. Callers read their authorization answers from /authz
+	// above, so this is where the grant that produces those answers has to
+	// land — otherwise a caller writes a membership into its own table, asks
+	// here whether that member may act, and is told no.
+	v1.Put("/tenants/:tenantId/members/:wallet", membersCtrl.PutMember)
+	v1.Delete("/tenants/:tenantId/members/:wallet", membersCtrl.DeleteMember)
 
 	return app
 }
