@@ -592,10 +592,11 @@ Two memberships still disagree, both in the Kaufmann tenant:
 | `0x27268E98DEc237158e0354a9bDEa5Cf9697152D5` | admin, no capabilities | **lost** access |
 | `0xd3D2B67ea1F654A34209CD39c080BB425089809e` | member, has `onboard_vehicles`,`reports` | **gained** access |
 
-Both are fixable by editing that row's capabilities in `memberships`, and
-neither was fixed — the prod DB tunnel was unavailable (`ssh
-dimo-database-prod` returns `Permission denied (publickey)`). **Do this before
-users return.** The first is somebody who can currently see nothing.
+**Both were reviewed and accepted as-is on 2026-08-11** — the lost access is
+known and deliberate, not an oversight to correct. Do not "fix" it without
+asking; someone already decided. If it is ever revisited, both are one edit to
+that row's capabilities in `memberships`, and the prod DB tunnel is needed
+(`ssh dimo-database-prod` was returning `Permission denied (publickey)`).
 
 The capability rule is a proxy. The proper fix is per-endpoint capability checks
 — `onboard_vehicles` for onboarding, `reports` for reports — which is the shape
@@ -780,14 +781,18 @@ What remains:
    Re-run it after any credential rotation; it is the cheapest possible
    discovery that a key or a license is wrong. Also settle the kaufmann coverage
    caveat above (4 of 11 tenants hold a usable client id)
-2. ~~Cutover~~ — **done 2026-08-11**, both apps, flag removed. Two follow-ups it
-   left behind, in priority order:
-   - **Fix the two Kaufmann-tenant memberships** listed above, one of whom lost
-     access. Needs the prod DB tunnel
+2. ~~Cutover~~ — **done 2026-08-11**, both apps, flag removed. What it left
+   behind, in priority order:
+   - **Stop logging expected 4xx at error level in fleet-lite and kaufmann.**
+     Both still do `logger.Err` for every non-404, and 403 is now the normal
+     answer for a non-member, so this will feed error-rate alerting. Same
+     one-line fix as `#15` here
    - **Move kaufmann off the capability proxy** to per-endpoint capability
-     checks, which makes the `is_admin` replacement exact
-   - **Stop logging expected 4xx at error level in fleet-lite** (and check
-     kaufmann), the same fix as `#15` here
+     checks, which makes the `is_admin` replacement exact rather than 151/153
+   - **Decide on kaufmann's `Access.GetWalletsWithAccess`.** Cutover ended its
+     only call path, so the one-off wallet-checksum repair it carries no longer
+     runs. Left in place deliberately rather than deleted as a side effect
+   - ~~Fix the two Kaufmann-tenant memberships~~ — reviewed and accepted 2026-08-11
 3. The DIMO token minter (`GET /v1/tenants/{id}/dimo-token`), so credentials
    never leave this service
 4. `/user/v1` management surface, then the b2b operator console — which is also
