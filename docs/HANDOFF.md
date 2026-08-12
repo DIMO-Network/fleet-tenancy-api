@@ -711,6 +711,38 @@ dedicated `Server` with a `podSelector` — not to an `HTTPRoute` on the shared 
 
 ## Traps — things that will bite you
 
+**Group metadata rides on every member vehicle's attestation, so vehicles
+disagree.** A group's name and colour are copied onto each member's
+`dimo.document.vehicle.groups` CloudEvent. Members attested before a rename and
+after it therefore carry different names for the same group, and there is no
+single authoritative copy to read.
+
+That makes any "adopt the incoming name" rule ordering-dependent unless it
+compares timestamps. A first attempt at fixing stale group names did exactly
+that and rewrote one production group's name 40 times in a single import,
+alternating between the two, with the surviving value decided by whichever
+vehicle happened to be processed last — one group ended up on the wrong name.
+The rule is now: adopt metadata only from an attestation **newer than the group
+row's `updated_at`** (`fleet-lite-app#111`). Anything that reads group metadata
+from attestations needs the same guard.
+
+**A rename can silently publish nothing at all.** kaufmann enqueues a
+re-publish per member vehicle on a group edit, but the job was unique
+`ByArgs` with River's default states — which include `completed`. A group
+renamed shortly after its vehicles were added matched the just-finished jobs
+and every insert was discarded, so the rename never reached the wire and no
+downstream reconcile could ever correct it. Fixed in `kaufmann-oracle#192` by
+restricting the unique states to in-flight ones. If you add a River job whose
+purpose is "state changed, republish", check its unique states first: coalescing
+against finished work is data loss, not deduplication.
+
+**Re-running a sync cannot fix a stale attestation.** Both bugs above presented
+as "the group did not sync". It had: memberships were correct (164 of 165, the
+gap being a vehicle without SACD grants) and the reconcile honestly reported
+`changed=0`. Only the name was wrong, and no number of re-runs would have
+changed it. Diff the two databases before re-running a job.
+
+
 **`DROP_FOREIGN_TENANT_GROUPS` — the republish gate, now satisfied.** Enabling it
 *before* fleet-lite republished its own group attestations would have deleted 370
 of 378 group memberships: 0 of 287 grouped vehicles had ever been edited locally,
