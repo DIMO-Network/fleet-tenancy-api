@@ -27,6 +27,16 @@ const (
 	CapManageSettings = "manage_settings"
 	CapOnboardVehicle = "onboard_vehicles"
 	CapReports        = "reports"
+
+	// CapManageVehicles gates acting on a vehicle the caller does not own —
+	// the operations a tenant performs through its own signer on a shared
+	// kernel account: transfer, disconnect and delete.
+	//
+	// It is deliberately separate from CapOnboardVehicle. Onboarding adds a
+	// vehicle the tenant already controls; these move or destroy an asset that
+	// belongs to somebody else, and the owning account's grant of our signer
+	// says the *tenant* may act, never which of its members may.
+	CapManageVehicles = "manage_vehicles"
 )
 
 // AuthzResult answers "what may this wallet do in this tenant?".
