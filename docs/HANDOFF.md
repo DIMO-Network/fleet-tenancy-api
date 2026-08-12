@@ -839,8 +839,19 @@ kubectl logs -n prod <pod> -c fleet-lite-app-migrate   # kaufmann's is named 'mi
 ## Outstanding decisions
 
 - **Rotate the five DIMO developer licenses?** Re-encryption protects them going
-  forward but does not undo prior exposure under the known key.
-- **Delete the `AllowLegacyEmptyEncKey` shim** in fleet-lite — prod is through
-  the re-encryption, so it is now dead weight that keeps the weak key readable.
-- **Publish the design docs** — gitignored here pending the group-id and
-  encryption fixes. The encryption one is done; R1 is not deployed.
+  forward but does not undo prior exposure under the known key. **This is the
+  only one of the three still open**, and removing the legacy shim below does
+  not settle it: the shim controlled whether *this code* would read a
+  weak-key row, not whether anyone else already had.
+- ~~Delete the `AllowLegacyEmptyEncKey` shim~~ — **done 2026-08-12**
+  (`fleet-lite-app#108`). `decryptSecret` now has no fallback key at all. A
+  straggler row written under the empty key fails to decrypt at runtime rather
+  than being silently readable; recovery is `reencrypt-tenant-secrets
+  -from-empty-key`, which reads through `DecryptSecretWith` and depends on no
+  app setting.
+- ~~Publish the design docs~~ — **done 2026-08-12**, now at
+  `docs/operator-tenancy/`. Both preconditions were met (group-id collision
+  fixed by R1 and deployed; encryption fixed). Worth knowing: the gitignore was
+  protecting nothing — a byte-identical copy has been public in `fleet-lite-app`
+  since that repo's `#96`, and `fleet-lite-app` is a public repo too. Scanned
+  before committing: no keys, no credentials, no wallet addresses.
