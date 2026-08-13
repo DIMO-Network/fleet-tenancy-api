@@ -41,6 +41,15 @@ type MemberWrite struct {
 
 	// GrantedByWallet records who performed the grant, for the audit trail.
 	GrantedByWallet string `json:"grantedByWallet,omitempty"`
+
+	// GrantedByTenantID records which tenant performed the grant — the audit
+	// trail for "the operator added this user", and what lets a customer's UI
+	// distinguish members they manage from members the operator manages.
+	//
+	// Deliberately not on the wire (json:"-"): it is set by controllers from
+	// the *authenticated* caller, never from the body, so the audit trail
+	// records who actually called rather than who the body claims called.
+	GrantedByTenantID string `json:"-"`
 }
 
 // Scope resolves ScopeGroupIDs into (groups, unrestricted, present).

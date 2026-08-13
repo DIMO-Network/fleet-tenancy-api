@@ -102,16 +102,17 @@ func (s *MemberService) Upsert(ctx context.Context, tenantID, wallet string, in 
 
 	if _, err = tx.ExecContext(ctx,
 		`INSERT INTO memberships
-		   (tenant_id, wallet, role, permissions, scope_group_ids, granted_by_wallet)
-		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))
+		   (tenant_id, wallet, role, permissions, scope_group_ids, granted_by_wallet, granted_by_tenant_id)
+		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, '')::uuid)
 		 ON CONFLICT (tenant_id, wallet) DO UPDATE SET
-		   role              = EXCLUDED.role,
-		   permissions       = EXCLUDED.permissions,
-		   scope_group_ids   = EXCLUDED.scope_group_ids,
-		   granted_by_wallet = COALESCE(EXCLUDED.granted_by_wallet, memberships.granted_by_wallet),
-		   updated_at        = NOW()`,
+		   role                 = EXCLUDED.role,
+		   permissions          = EXCLUDED.permissions,
+		   scope_group_ids      = EXCLUDED.scope_group_ids,
+		   granted_by_wallet    = COALESCE(EXCLUDED.granted_by_wallet, memberships.granted_by_wallet),
+		   granted_by_tenant_id = COALESCE(EXCLUDED.granted_by_tenant_id, memberships.granted_by_tenant_id),
+		   updated_at           = NOW()`,
 		tenantID, checksummed, role, permsJSON, scopeArg,
-		normaliseOptionalWallet(in.GrantedByWallet)); err != nil {
+		normaliseOptionalWallet(in.GrantedByWallet), in.GrantedByTenantID); err != nil {
 		return fmt.Errorf("upsert membership: %w", err)
 	}
 

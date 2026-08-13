@@ -25,6 +25,11 @@ env:
   DB_MAX_IDLE_CONNECTIONS: '3'
   DB_SSL_MODE: require
   JWT_KEY_SET_URL: https://auth.dimo.zone/keys
+  DIMO_AUTH_URL: https://auth.dimo.zone
+  TOKEN_EXCHANGE_URL: https://token-exchange-api.dimo.zone
+  VEHICLE_NFT_ADDRESS: '0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF'
+  IDENTITY_API_ENDPOINT: https://identity-api.dimo.zone/query
+  ACCOUNTS_API_ENDPOINT: https://accounts.dimo.org
 service:
   type: ClusterIP
   ports:

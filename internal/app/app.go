@@ -23,6 +23,7 @@ import (
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/controllers"
+	"github.com/DIMO-Network/fleet-tenancy-api/internal/gateway"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/service"
 	"github.com/DIMO-Network/shared/pkg/db"
 	jwtware "github.com/gofiber/contrib/jwt"
@@ -48,12 +49,22 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	app.Get("/version", getVersion)
 
 	tenantSvc := service.NewTenantService(logger, pdb)
+	memberSvc := service.NewMemberService(logger, pdb)
 	authzCtrl := controllers.NewAuthzController(logger, service.NewAuthzService(logger, pdb), tenantSvc, CallerFrom)
 	resolveCtrl := controllers.NewResolveController(logger, tenantSvc, CallerFrom)
-	membersCtrl := controllers.NewMembersController(logger, service.NewMemberService(logger, pdb), tenantSvc, CallerFrom)
+	membersCtrl := controllers.NewMembersController(logger, memberSvc, tenantSvc, CallerFrom)
 	tenantsCtrl := controllers.NewTenantsController(logger, tenantSvc, CallerFrom)
 	entitlementsCtrl := controllers.NewEntitlementsController(logger,
 		service.NewEntitlementService(logger, pdb), tenantSvc, CallerFrom)
+
+	// The effective-credential surface: the token minter and on-behalf
+	// provisioning. The credential service is the only code that decrypts a
+	// tenant key at runtime; everything else moves tokens, not keys.
+	credSvc := service.NewCredentialService(logger, pdb, settings,
+		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint))
+	provisionSvc := service.NewProvisionService(logger, pdb, memberSvc, credSvc,
+		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint))
+	provisionCtrl := controllers.NewProvisionController(logger, provisionSvc, credSvc, tenantSvc, CallerFrom)
 
 	// Service-to-service surface. Callers are fleet-lite-app, kaufmann-oracle and
 	// the b2b proxy, authenticating with a DIMO developer-license JWT verified
@@ -101,6 +112,14 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// here whether that member may act, and is told no.
 	v1.Put("/tenants/:tenantId/members/:wallet", membersCtrl.PutMember)
 	v1.Delete("/tenants/:tenantId/members/:wallet", membersCtrl.DeleteMember)
+
+	// On-behalf provisioning and the token minter. Registered before the
+	// parameterised member routes matter-of-factly — fiber matches "provision"
+	// as a :wallet value otherwise, and PUT/POST differ so they cannot collide
+	// today, but the explicit route must exist before anyone adds a POST to
+	// the parameterised path.
+	v1.Post("/tenants/:tenantId/members/provision", provisionCtrl.Provision)
+	v1.Get("/tenants/:tenantId/dimo-token", provisionCtrl.GetDimoToken)
 
 	// The operator console's tenant surface, reached by b2b through kaufmann.
 	// Creating is nested under the operator so the parent is in the path where

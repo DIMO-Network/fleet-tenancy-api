@@ -22,3 +22,12 @@ JWT_KEY_SET_URL: https://auth.dimo.zone/keys
 # outside local if this is empty: an unset key is not "no encryption", it is
 # encryption under sha256(""), which anyone can compute.
 TENANT_SECRET_ENC_KEY: ""
+
+# DIMO platform services behind the token minter and provisioning. Not required
+# to boot — /v1/authz stays available without them; a mint or provision call
+# fails with a named error instead. Values match the sibling repos.
+DIMO_AUTH_URL: https://auth.dimo.zone
+TOKEN_EXCHANGE_URL: https://token-exchange-api.dimo.zone
+VEHICLE_NFT_ADDRESS: '0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF'
+IDENTITY_API_ENDPOINT: https://identity-api.dimo.zone/query
+ACCOUNTS_API_ENDPOINT: https://accounts.dimo.org
