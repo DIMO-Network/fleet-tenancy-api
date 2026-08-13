@@ -838,13 +838,74 @@ that used to reconcile cross-app writes for the shared Kaufmann tenant is
 gone, so flag-off display reads of that tenant go stale between mirror-groups
 runs.
 
-**P5 remains:** move the scope-filtering SQL and the vehicle/report group
-joins onto tenancy-backed token-id sets, then drop the local tables, the
-mirrors, the mirror-groups crons and the GROUPS_FROM_TENANCY flags, and add
-the deferred FKs from `scope_group_ids` / `source_group_id` (array columns
-need a trigger or check, not a plain FK — decide then). Also delete
-`SyncVehicleGroups` with its frontend caller, and fleet-lite's
-`vehicles.groups_updated_at` / `last_group_sync_at` columns.
+### P3 + P4 ROLLED OUT AND VERIFIED — 2026-08-13
+
+All six PRs merged and deployed (`v0.5.2` here, fleet-lite `v0.7.6`, kaufmann
+`v1.48.0`), migrations applied through `20260813150000`, and the whole gate
+sequence ran:
+
+| Step | Result |
+|---|---|
+| `backfill-groups -dry-run` | 87 groups (81 kaufmann + 84 fleet-lite, 78 overlapping), 567 memberships, no metadata disagreements, no name collisions, **no dangling refs** |
+| `backfill-groups` (real) | **87 groups, 567 memberships written** |
+| fleet-lite `groups-diff` | 87 groups, 78 agree, 9 remote-extra, **differ=0, missing_remote=0** |
+| kaufmann `groups-diff` | 85 groups, 65 agree, 20 remote-extra, **differ=0, missing_remote=0** |
+| publisher, first populated run | `checked=357, failed=0` — 357 CEs, one per grouped vehicle |
+| publisher, next run | `checked=357, unchanged=357, published=0` — converged |
+
+Every `remote-extra` is in the shared Kaufmann tenant and is the union
+working as designed. `skipped_tenants=0`, which answers part of the kaufmann
+coverage caveat from the other direction: every tenant *holding grouped
+vehicles* resolves a usable effective credential, because the parent
+fallback covers the ones with no license of their own.
+
+**The backfill was run as an in-cluster Job, not through the tunnel** — it
+only talks to Postgres, so it is deliberately *unmeshed* (no proxy to
+outlive the container, no shutdown wrapper needed). The manifest is worth
+recreating rather than remembering: it takes `envFrom` this service's config
+and secret, plus `DB_HOST`/`USER`/`PASSWORD` from the other two apps'
+secrets via `secretKeyRef`, and composes the two `BACKFILL_*_DSN` strings in
+the container command with `default_transaction_read_only=on` forced on both
+sources.
+
+**The order mattered more than expected.** P4 deployed with the tenancy group
+tables still empty, and P4 makes every group write go to tenancy first — so
+between the caller deploy and the backfill, any edit to an *existing* group
+would have 404'd. Nothing was attempted in that window, but the lesson
+generalises: **the backfill is not a follow-up to a write cutover, it is a
+precondition for it.** If this is ever re-derived (a new environment, a
+restored database), run the backfill before the callers ship, not after.
+
+The flag flips are open as chart-only PRs: fleet-lite #114, kaufmann #204.
+
+**One bug fell out of the first publisher run** — `published=714` against
+`checked=357`, exactly double, because the plan and the publish loop both
+incremented the same counter. Nothing published twice (the next run's
+`unchanged=357` proves it); only the accounting lied, and it would have lied
+worst on a partly-failed run by inflating the success count. Fixed in `#32`,
+which also makes the command fail when the counts do not reconcile. Third
+time this programme has been bitten by a counter that measured the wrong
+thing — after the backfill's rows-processed-not-written and the sync's
+`changed=0`-means-two-things. **Counters here are load-bearing evidence;
+give them an invariant that can fail.**
+
+### P5 — what remains
+
+- Move the scope-filtering SQL and the vehicle/report group joins onto
+  tenancy-backed token-id sets. This is the real work: fleet-lite's
+  `AccessibleTokenIDs` / `allowedGroupsFilter` (`vehicle.go`) and
+  `geofence.go`'s `EffectiveTokenIDs`, kaufmann's `GetVehiclesOnboarded`
+  group joins and the reports filters.
+- Then drop the local tables, the mirrors, the `mirror-groups` crons and the
+  `GROUPS_FROM_TENANCY` flags.
+- Add the deferred FKs from `scope_group_ids` / `source_group_id`. Note they
+  are **arrays**, so this is a trigger or a check constraint, not a plain FK
+  — decide which when the rows are stable.
+- Delete `SyncVehicleGroups` together with its frontend caller, and
+  fleet-lite's now-unused `vehicles.groups_updated_at` /
+  `last_group_sync_at`, plus the orphaned `LicensePlateSyncService.SyncVINOnly`.
+- Docs left stale on purpose until the code moves: `docs/GROUP_SYNC.md`,
+  `docs/FLEET_GROUPS_PLAN.md` in fleet-lite.
 
 ### Decisions taken while building, worth not re-litigating
 

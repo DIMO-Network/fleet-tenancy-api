@@ -86,13 +86,25 @@ func (p *publishGroupAttestationsCmd) Execute(ctx context.Context, _ *flag.FlagS
 
 	p.logger.Info().
 		Int("checked", res.Checked).
+		Int("planned", res.Planned).
 		Int("published", res.Published).
 		Int("retracted", res.Retracted).
 		Int("unchanged", res.Unchanged).
 		Int("failed", res.Failed).
 		Int("skipped_tenants", res.SkippedTenants).
+		Int("skipped_vehicles", res.SkippedVehicles).
 		Bool("dry_run", p.dryRun).
 		Msg("group attestation publish complete")
+
+	// The counts are only worth reading if they reconcile. Saying so out loud
+	// beats quietly printing an arithmetic that does not add up.
+	if !p.dryRun && !res.Balances() {
+		p.logger.Error().
+			Int("planned", res.Planned).
+			Int("accounted", res.Published+res.Retracted+res.Failed+res.SkippedVehicles).
+			Msg("publisher accounting does not balance — the counts above are not trustworthy")
+		return subcommands.ExitFailure
+	}
 
 	if res.Failed > 0 {
 		return subcommands.ExitFailure

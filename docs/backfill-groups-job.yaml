@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fleet-tenancy-api-backfill-groups
+  namespace: prod
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      annotations:
+        # Not meshed on purpose: this job talks only to Postgres (three RDS
+        # databases), never to an in-cluster service, so it needs no mesh
+        # identity — and staying out of the mesh avoids the proxy-outlives-
+        # container hang entirely rather than working around it.
+        linkerd.io/inject: disabled
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: backfill-groups
+          image: dimozone/fleet-tenancy-api:a72abef
+          envFrom:
+            - configMapRef:
+                name: fleet-tenancy-api-config
+            - secretRef:
+                name: fleet-tenancy-api-secret
+          env:
+            - name: K_HOST
+              valueFrom:
+                secretKeyRef: {name: kaufmann-oracle-secret, key: DB_HOST}
+            - name: K_USER
+              valueFrom:
+                secretKeyRef: {name: kaufmann-oracle-secret, key: DB_USER}
+            - name: K_PASS
+              valueFrom:
+                secretKeyRef: {name: kaufmann-oracle-secret, key: DB_PASSWORD}
+            - name: F_HOST
+              valueFrom:
+                secretKeyRef: {name: fleet-lite-app-secret, key: DB_HOST}
+            - name: F_USER
+              valueFrom:
+                secretKeyRef: {name: fleet-lite-app-secret, key: DB_USER}
+            - name: F_PASS
+              valueFrom:
+                secretKeyRef: {name: fleet-lite-app-secret, key: DB_PASSWORD}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Both sources are forced read-only at the session level: this
+              # job reads them and writes only to fleet_tenancy_api.
+              export BACKFILL_KAUFMANN_DSN="host=$K_HOST port=5432 dbname=kaufmann_oracle user=$K_USER password=$K_PASS sslmode=require options='-c default_transaction_read_only=on'"
+              export BACKFILL_FLEETLITE_DSN="host=$F_HOST port=5432 dbname=fleets_lite user=$F_USER password=$F_PASS sslmode=require options='-c search_path=fleets_lite -c default_transaction_read_only=on'"
+              /fleet-tenancy-api backfill-groups $BACKFILL_ARGS
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
