@@ -1,0 +1,81 @@
+{{- range .Values.cronJobs }}
+{{- if .enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "fleet-tenancy-api.fullname" $ }}-{{ .name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "fleet-tenancy-api.labels" $ | nindent 4 }}
+spec:
+  schedule: {{ .schedule | quote }}
+  concurrencyPolicy: {{ .concurrencyPolicy | default "Forbid" }}
+  successfulJobsHistoryLimit: {{ .successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .failedJobsHistoryLimit | default 3 }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .backoffLimit | default 1 }}
+      activeDeadlineSeconds: {{ .activeDeadlineSeconds | default 1800 }}
+      ttlSecondsAfterFinished: {{ .ttlSecondsAfterFinished | default 3600 }}
+      template:
+        metadata:
+          labels:
+            {{- include "fleet-tenancy-api.selectorLabels" $ | nindent 12 }}
+            cronjob: {{ .name }}
+          annotations:
+            # Job pods MUST be meshed, and must then shut the proxy down by
+            # hand (the container command below owns that). identity-api
+            # authorizes on mesh identity and 403s unmeshed callers, which
+            # silently breaks developer-JWT minting — fleet-lite's import cron
+            # ran green for months while doing nothing because of exactly
+            # this. And an injected proxy outlives the main container, so
+            # without the explicit shutdown the job never terminates.
+            linkerd.io/inject: enabled
+            {{- with $.Values.podAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        spec:
+          {{- with $.Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ include "fleet-tenancy-api.serviceAccountName" $ }}
+          securityContext:
+            {{- toYaml $.Values.podSecurityContext | nindent 12 }}
+          restartPolicy: {{ .restartPolicy | default "Never" }}
+          terminationGracePeriodSeconds: {{ .terminationGracePeriodSeconds | default 30 }}
+          containers:
+            - name: {{ .name }}
+              securityContext:
+                {{- toYaml $.Values.securityContext | nindent 16 }}
+              image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              # The proxy shutdown lives here, not in values, so a cronjob
+              # added later cannot forget it and reintroduce the hang. values
+              # supplies `script`; this wraps it and preserves the exit code.
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  {{- .script | trim | nindent 18 }}
+                  code=$?
+                  wget -q -O- --post-data='' http://localhost:4191/shutdown >/dev/null 2>&1 || true
+                  exit $code
+              envFrom:
+                - configMapRef:
+                    name: {{ include "fleet-tenancy-api.fullname" $ }}-config
+                - secretRef:
+                    name: {{ include "fleet-tenancy-api.fullname" $ }}-secret
+              resources:
+                {{- toYaml (.resources | default $.Values.resources) | nindent 16 }}
+          {{- with $.Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
+{{- end }}

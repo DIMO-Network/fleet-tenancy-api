@@ -40,6 +40,15 @@ type Settings struct {
 	IdentityAPIEndpoint url.URL `yaml:"IDENTITY_API_ENDPOINT"`
 	AccountsAPIEndpoint url.URL `yaml:"ACCOUNTS_API_ENDPOINT"`
 
+	// The group-attestation publisher (P4 of the groups move). AttestAPIURL
+	// receives dimo.document.vehicle.groups CloudEvents; ChainID is part of
+	// both the subject DID (did:erc721:<chain>:...) and nothing else here.
+	// Not boot-required for the same reason as the minter settings above —
+	// only the publish-group-attestations command needs them, and it fails
+	// with a named error when they are absent.
+	AttestAPIURL url.URL `yaml:"ATTEST_API_URL"`
+	ChainID      int64   `yaml:"CHAIN_ID"`
+
 	// TrustedCallerKeys is the pre-shared key set that gates /v1, formatted
 	// "name:key,name:key". The name is for logging and revocation only; it is
 	// the key that authenticates.

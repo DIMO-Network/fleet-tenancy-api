@@ -31,3 +31,8 @@ TOKEN_EXCHANGE_URL: https://token-exchange-api.dimo.zone
 VEHICLE_NFT_ADDRESS: '0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF'
 IDENTITY_API_ENDPOINT: https://identity-api.dimo.zone/query
 ACCOUNTS_API_ENDPOINT: https://accounts.dimo.org
+
+# The group-attestation publisher (publish-group-attestations). Only that
+# command needs these; the API serves without them.
+ATTEST_API_URL: https://attest.dimo.zone
+CHAIN_ID: 137
