@@ -72,6 +72,22 @@ func (s *AuthzService) Authorize(ctx context.Context, tenantID, wallet string) (
 	}
 	result.TenantStatus = status
 
+	// A suspended tenant grants nobody anything, membership or delegation.
+	//
+	// Enforced here rather than left to callers. The field has been on the
+	// response since the first release and *no caller has ever read it* —
+	// kaufmann and fleet-lite both decode tenantStatus and neither checks it —
+	// so suspending a tenant was decorative: the operator console would say the
+	// customer's users can no longer sign in, and they still could. Answering
+	// it in the one place that answers the question makes it true everywhere,
+	// with no caller change.
+	//
+	// TenantStatus is still returned so a caller can say *why* rather than
+	// showing a bare denial.
+	if status != models.StatusActive {
+		return result, nil
+	}
+
 	// 1. Direct membership.
 	var (
 		role        string
