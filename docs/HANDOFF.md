@@ -787,6 +787,65 @@ credential question is settled. Remember the plan's risk note: the backfill
 touches the structure that already caused the 370-of-378 near-miss — diff
 before enforcing, always.
 
+**P4 — BUILT, PRs open, stacked on the P3 PRs.** Written 2026-08-13: this repo
+#31 (on #30), fleet-lite #113 (on #112), kaufmann #203 (on #202). All three
+repos squash-merge, so remember the stacked-PR mechanics recorded above:
+retarget before deleting the merged branch, rebase `--onto`, empty commit if
+CI does not re-run.
+
+What P4 is, in one paragraph each side:
+
+- **This repo becomes the single publisher.** `publish-group-attestations`
+  (a chart CronJob every 10 minutes, meshed with the proxy-shutdown wrapper —
+  the template owns it) scans the group tables against a new
+  `vehicle_group_attestation_state` table (migration `20260813150000`) and
+  publishes `dimo.document.vehicle.groups` for every vehicle whose document
+  digest changed. Scan-based deliberately — kaufmann's per-write queue is what
+  once coalesced a rename into completed jobs (#192). The wire contract is
+  unchanged (same type, subject DID, payload, ERC-191 signature over the data
+  bytes, signed with the tenant's EFFECTIVE license via CredentialService — so
+  operator-managed customers publish under their operator's license, which
+  neither source app could do). Only `producer` changed: "fleet-tenancy-api",
+  deliberately distinct from both retired producers. New settings
+  ATTEST_API_URL and CHAIN_ID.
+
+- **Both callers write through.** Every group mutation goes to this service
+  FIRST, then mirrors into the local tables — remote-first so a half-failure
+  leaves the authority right and the mirror behind (a retry or mirror-groups
+  converges), never a reported success that did not reach the owner. The
+  local tables stay as mirrors ONLY for the scope-filtering SQL joins
+  (vehicle listing, reports, geofences) until P5 rewrites those; each app
+  gained a `mirror-groups` daily cron that reconverges its mirror from
+  `GET /v1/tenants/{id}/vehicle-groups` — replacing the deleted CE import by
+  pulling from the single owner instead of reconciling a peer's stream.
+
+- **Deleted:** fleet-lite's `import_group_attestations`,
+  `republish_group_attestations`, `group_sync.go`, the controller republish
+  fan-out, `AttestVehicleGroups`, and `DROP_FOREIGN_TENANT_GROUPS` (gone —
+  the trap above about its republish gate is now historical); kaufmann's
+  `groupattest` River worker, `vehicle_groups_attest.go`,
+  `import-group-attestations` and `resync-group-attestations`. Roughly 1,900
+  lines of convergence machinery across the two apps.
+
+**P4 deploy order and gates.** P3's gate comes first and is unchanged
+(backfill, diff, flag). Then: this service (P3+P4 together is fine — the
+publisher reads tables the backfill fills; before the backfill it publishes
+nothing), verify a `publish-group-attestations -dry-run` in prod, then the
+callers. The publisher's first real run publishes every grouped vehicle
+(~370) under the new producer — one-time, expected. After the callers
+deploy, GROUPS_FROM_TENANCY should be flipped ON promptly: the CE import
+that used to reconcile cross-app writes for the shared Kaufmann tenant is
+gone, so flag-off display reads of that tenant go stale between mirror-groups
+runs.
+
+**P5 remains:** move the scope-filtering SQL and the vehicle/report group
+joins onto tenancy-backed token-id sets, then drop the local tables, the
+mirrors, the mirror-groups crons and the GROUPS_FROM_TENANCY flags, and add
+the deferred FKs from `scope_group_ids` / `source_group_id` (array columns
+need a trigger or check, not a plain FK — decide then). Also delete
+`SyncVehicleGroups` with its frontend caller, and fleet-lite's
+`vehicles.groups_updated_at` / `last_group_sync_at` columns.
+
 ### Decisions taken while building, worth not re-litigating
 
 - **Suspension now removes access** (#23). `tenantStatus` had ridden along on
