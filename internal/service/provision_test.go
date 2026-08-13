@@ -78,8 +78,18 @@ func TestProvision(t *testing.T) {
 			GrantedByTenantID: opTenant,
 		}})
 		require.NoError(t, err)
-		assert.Equal(t, provisionedWallet, res.Wallet)
+		assert.Equal(t, provisionedWallet, res.Member.Wallet)
 		assert.False(t, res.Created)
+		// The response is the written membership as the member list would show
+		// it, so the console renders the new row without a second call.
+		assert.Equal(t, "member", res.Member.Role)
+		assert.Equal(t, []string{models.CapReports}, res.Member.Permissions)
+		require.NotNil(t, res.Member.ScopeGroupIDs)
+		assert.Empty(t, res.Member.ScopeGroupIDs, "empty scope survives the round trip as empty, not null")
+		require.NotNil(t, res.Member.GrantedByTenantID)
+		assert.Equal(t, opTenant, *res.Member.GrantedByTenantID)
+		require.NotNil(t, res.Member.Email)
+		assert.Equal(t, "person@example.com", *res.Member.Email)
 
 		got, err := authz.Authorize(ctx, custTenant, provisionedWallet)
 		require.NoError(t, err)

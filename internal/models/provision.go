@@ -31,11 +31,12 @@ type ProvisionRequest struct {
 	MemberWrite
 }
 
-// ProvisionResponse reports what provisioning resolved. Created distinguishes
-// "found an existing DIMO account" from "registered a new one", which the
-// console surfaces — a person with an existing account signs in as usual, a
-// created one goes through first-login.
+// ProvisionResponse reports what provisioning resolved. Member is the written
+// membership in the same shape the member list serves, so the console can
+// render the new row without a second round trip. Created distinguishes "found
+// an existing DIMO account" from "registered a new one" — a person with an
+// existing account signs in as usual, a created one goes through first-login.
 type ProvisionResponse struct {
-	Wallet  string `json:"wallet"`
 	Created bool   `json:"created"`
+	Member  Member `json:"member"`
 }

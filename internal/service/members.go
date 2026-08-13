@@ -130,6 +130,49 @@ func (s *MemberService) Upsert(ctx context.Context, tenantID, wallet string, in 
 	return nil
 }
 
+// Get returns one membership in the same wire shape ListMembers uses, so a
+// caller that just wrote a member can hand back exactly what a subsequent list
+// would show — the write path and the read path cannot drift apart.
+func (s *MemberService) Get(ctx context.Context, tenantID, wallet string) (*models.Member, error) {
+	var (
+		m           models.Member
+		email       sql.NullString
+		permsJSON   []byte
+		scopeGroups pq.StringArray
+		grantedTen  sql.NullString
+		grantedWal  sql.NullString
+		lastLogin   sql.NullTime
+		createdAt   sql.NullTime
+	)
+	err := s.pdb.DBS().Reader.QueryRowContext(ctx,
+		`SELECT m.wallet, u.email, m.role, m.permissions, m.scope_group_ids,
+		        m.granted_by_tenant_id, m.granted_by_wallet, m.last_login_at, m.created_at
+		   FROM memberships m
+		   LEFT JOIN users u ON u.wallet = m.wallet
+		  WHERE m.tenant_id = $1 AND lower(m.wallet) = lower($2)`,
+		tenantID, wallet).Scan(&m.Wallet, &email, &m.Role, &permsJSON, &scopeGroups,
+		&grantedTen, &grantedWal, &lastLogin, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrMemberNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get member %s of %s: %w", wallet, tenantID, err)
+	}
+	m.Email = nullStringPtr(email)
+	m.Permissions = parsePermissions(permsJSON)
+	// nil stays nil (unrestricted); empty stays empty (restricted to nothing).
+	if scopeGroups != nil {
+		m.ScopeGroupIDs = []string(scopeGroups)
+	}
+	m.GrantedByTenantID = nullStringPtr(grantedTen)
+	m.GrantedByWallet = nullStringPtr(grantedWal)
+	m.LastLoginAt = nullTimePtr(lastLogin)
+	if createdAt.Valid {
+		m.CreatedAt = createdAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
+	}
+	return &m, nil
+}
+
 // Remove deletes a membership.
 //
 // A hard delete, matching what the shared model means by "not a member". The
