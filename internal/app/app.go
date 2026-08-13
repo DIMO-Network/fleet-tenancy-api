@@ -65,6 +65,7 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	provisionSvc := service.NewProvisionService(logger, pdb, memberSvc, credSvc,
 		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint))
 	provisionCtrl := controllers.NewProvisionController(logger, provisionSvc, credSvc, tenantSvc, CallerFrom)
+	groupsCtrl := controllers.NewGroupsController(logger, service.NewGroupService(logger, pdb), tenantSvc, CallerFrom)
 
 	// Service-to-service surface. Callers are fleet-lite-app, kaufmann-oracle and
 	// the b2b proxy, authenticating with a DIMO developer-license JWT verified
@@ -136,6 +137,17 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	v1.Get("/tenants/:tenantId/vehicles", entitlementsCtrl.ListVehicles)
 	v1.Post("/tenants/:tenantId/vehicles", entitlementsCtrl.AssignVehicles)
 	v1.Delete("/tenants/:tenantId/vehicles/:tokenId", entitlementsCtrl.RevokeVehicle)
+
+	// Fleet groups — P1 of the groups move (docs/plans/01-groups-into-tenancy.md):
+	// endpoints served, no caller yet. Both apps still own their local copies;
+	// P3's backfill and flagged reads are what start pointing them here.
+	v1.Get("/tenants/:tenantId/groups", groupsCtrl.ListGroups)
+	v1.Post("/tenants/:tenantId/groups", groupsCtrl.CreateGroup)
+	v1.Patch("/tenants/:tenantId/groups/:groupId", groupsCtrl.UpdateGroup)
+	v1.Delete("/tenants/:tenantId/groups/:groupId", groupsCtrl.DeleteGroup)
+	v1.Get("/tenants/:tenantId/groups/:groupId/vehicles", groupsCtrl.ListGroupVehicles)
+	v1.Post("/tenants/:tenantId/groups/:groupId/vehicles", groupsCtrl.AddGroupVehicles)
+	v1.Delete("/tenants/:tenantId/groups/:groupId/vehicles/:tokenId", groupsCtrl.RemoveGroupVehicle)
 
 	return app
 }
