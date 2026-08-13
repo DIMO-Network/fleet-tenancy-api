@@ -138,5 +138,18 @@ func (s *ProvisionService) Provision(ctx context.Context, tenantID string, in *m
 		Str("wallet", wallet).
 		Bool("created", created).
 		Msg("member provisioned")
-	return &models.ProvisionResponse{Wallet: common.HexToAddress(wallet).Hex(), Created: created}, nil
+
+	member, err := s.members.Get(ctx, tenantID, wallet)
+	if err != nil {
+		// The write committed; failing the request now would report a grant
+		// that happened as one that did not — the exact confusion the
+		// write-through exists to prevent. Answer with what was written.
+		s.logger.Warn().Err(err).Str("wallet", wallet).Msg("provision: read-back failed")
+		member = &models.Member{
+			Wallet:      common.HexToAddress(wallet).Hex(),
+			Role:        in.Role,
+			Permissions: in.Permissions,
+		}
+	}
+	return &models.ProvisionResponse{Created: created, Member: *member}, nil
 }
