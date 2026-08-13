@@ -626,24 +626,27 @@ fleet-lite's `ErrorHandler` has the same problem this service had before
 normal answer for a non-member, that will feed error-rate alerting. kaufmann's
 equivalent should be checked too. One-line fix, same shape as `#15` here.
 
-## The operator console — IN FLIGHT 2026-08-12
+## The operator console — MERGED AND DEPLOYED 2026-08-13
 
-`b2b-fleet-mgr-app` is being built into the operator console, with this service
-growing the surface behind it. **Nine PRs are open in three stacks**, each
-stacked where it genuinely depends on the one below rather than for
-convenience. Review bottom-up.
+`b2b-fleet-mgr-app` is now the operator console, with this service serving the
+surface behind it. All three stacks merged bottom-up on 2026-08-13 and deployed
+in the load-bearing order (this service first, verified live, then the callers):
 
-| Repo | PR | Base | What |
-|---|---|---|---|
-| this | [#22](https://github.com/DIMO-Network/fleet-tenancy-api/pull/22) | — | **merged, deployed `v0.2.0`** — membership writes |
-| this | #23 | `main` | tenant management surface (children, create, patch, members) |
-| this | #24 | #23 | vehicle entitlements + exclusivity + isolation suite |
-| kaufmann | #197 | `main` | membership write-through |
-| kaufmann | #198 | #197 | customer-management proxy |
-| kaufmann | #199 | #198 | vehicle-entitlement proxy |
-| b2b | #171 | `main` | the console, against a stub |
-| b2b | #173 | #171 | live proxy routes |
-| b2b | #174 | #173 | Vehicles tab wired, hydration + drift |
+| Repo | PRs | Released as |
+|---|---|---|
+| this | #22 (`v0.2.0`), #23, #24 (re-opened as #26 after an auto-close), #25 docs | `v0.3.0`, image `912b04a` — rollout verified, both migrations applied (`20260812230000`) |
+| kaufmann | #197 write-through, #198 customer proxy, #199 entitlement proxy | `v1.44.0` |
+| b2b | #171 console+stub, #173 live proxy routes, #174 Vehicles tab | `v1.6.16` |
+
+Merge mechanics worth knowing for the next stack: all three repos squash-merge,
+so a stacked PR must be re-based (`git rebase --onto origin/main <old-base>`)
+and re-targeted after the one under it merges. Retarget **before** deleting the
+merged branch — deleting first auto-closes the stacked PR, and a closed PR whose
+head was then force-pushed cannot be reopened (that is how #24 became #26).
+`gh pr edit --base` fails on a Projects-classic GraphQL deprecation; use
+`gh api repos/<owner>/<repo>/pulls/<n> -X PATCH -f base=main`. And CI does not
+re-run when a branch was pushed before its PR was retargeted to main — push an
+empty commit to trigger it.
 
 **Deploy order is load-bearing.** This service first, every time: an
 unrecognised route is a 404, which kaufmann treats as a failure, so shipping a
@@ -665,6 +668,16 @@ keep near-identical `fleet_groups` tables and both synchronise the same
 CloudEvent independently, which is the single cause behind six of the traps
 below. It also makes `scope_group_ids` and `source_group_id` real references
 instead of bare text pointing into databases this service cannot see.
+
+**Agreed ordering (2026-08-13): provisioning first, then the groups phases.**
+Provisioning finishes the console programme where it left off and touches
+nothing the groups plan touches; starting the multi-repo groups rework with the
+console one endpoint short would leave both half-done. After provisioning:
+P1 (schema + read path here) and P2 (kaufmann's imei→token-id re-key, purely
+internal to kaufmann) are independent and can proceed in parallel; P3's
+backfill-and-diff, P4's write cutover and P5's table drops are strictly ordered
+behind them. b2b's Vehicles-tab drift computation (#174) is deleted in P4's
+wake, not before — it is the stopgap the plan replaces.
 
 ### Decisions taken while building, worth not re-litigating
 
