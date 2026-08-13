@@ -635,8 +635,23 @@ in the load-bearing order (this service first, verified live, then the callers):
 | Repo | PRs | Released as |
 |---|---|---|
 | this | #22 (`v0.2.0`), #23, #24 (re-opened as #26 after an auto-close), #25 docs | `v0.3.0`, image `912b04a` — rollout verified, both migrations applied (`20260812230000`) |
-| kaufmann | #197 write-through, #198 customer proxy, #199 entitlement proxy | `v1.44.0` |
-| b2b | #171 console+stub, #173 live proxy routes, #174 Vehicles tab | `v1.6.16` |
+| kaufmann | #197 write-through, #198 customer proxy, #199 entitlement proxy | `v1.44.0` — rolled out, 0 restarts, only the known-benign SACD 403 in the error stream |
+| b2b | #171 console+stub, #173 live proxy routes, #174 Vehicles tab | `v1.6.16` (image `0980003`) — rolled out |
+
+**`tenancy-diff` re-run after the write-through deployed, as required.**
+fleet-lite: `differ=0, missing_remote=0`; its `remote_extra` grew 4→9, all
+"extra capabilities remotely: manage_vehicles" — that is #197's derived
+capability existing only in the shared model, by design. kaufmann:
+`differ=0` but **one `missing_remote`**: wallet
+`0xDA13fE288658C594Eac74d41ce9752474d4AD146` in the Kaufmann tenant, local
+`role=member` with no capabilities and no groups, remote no access. It was
+granted locally in the window between cutover (2026-08-11) and the write-through
+deploy — a live instance of the reported-success-conferred-nothing bug this
+release closes. Under the current gates the row confers nothing anywhere, so
+nobody is blocked who would otherwise act; left unfixed **deliberately, pending
+review** rather than silently replayed. To fix: re-grant through the console
+(now write-through), or PUT the membership to `/v1` with `role=member`,
+`permissions=[]`, `scopeGroupIds=[]`.
 
 Merge mechanics worth knowing for the next stack: all three repos squash-merge,
 so a stacked PR must be re-based (`git rebase --onto origin/main <old-base>`)
