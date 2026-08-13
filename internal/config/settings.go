@@ -27,6 +27,19 @@ type Settings struct {
 	// MUST be set outside local — see Validate.
 	TenantSecretEncKey string `yaml:"TENANT_SECRET_ENC_KEY"`
 
+	// The DIMO platform services behind the token minter and provisioning.
+	// None are required to boot: /v1/authz must stay available even when the
+	// minter is unconfigured, so a missing value fails the individual mint or
+	// provision call with a named error instead of failing startup. This is the
+	// same asymmetry as the callers' TENANCY_API_URL — only settings whose
+	// absence is silently dangerous (the encryption key, the caller keys)
+	// refuse to boot.
+	DimoAuthURL         url.URL `yaml:"DIMO_AUTH_URL"`
+	TokenExchangeURL    url.URL `yaml:"TOKEN_EXCHANGE_URL"`
+	VehicleNftAddress   string  `yaml:"VEHICLE_NFT_ADDRESS"`
+	IdentityAPIEndpoint url.URL `yaml:"IDENTITY_API_ENDPOINT"`
+	AccountsAPIEndpoint url.URL `yaml:"ACCOUNTS_API_ENDPOINT"`
+
 	// TrustedCallerKeys is the pre-shared key set that gates /v1, formatted
 	// "name:key,name:key". The name is for logging and revocation only; it is
 	// the key that authenticates.

@@ -669,13 +669,28 @@ caller ahead of its endpoints turns every affected write into a 502.
 
 ### What is left
 
-**Provisioning** — `POST /v1/tenants/{id}/members/provision`, accounts-api
-lookup-or-create by email, plus the DIMO token minter. It is the last thing the
-console needs and the first time this service handles decrypted credential
-material at runtime, so it deserves more care than the slices before it.
-`dimoauth` is already in the dependency tree. Until it lands, b2b's stub flag
-stays defaulted on: everything except adding a user is live, and a console where
-one action 404s is harder to reason about than one that is honestly fake.
+**Provisioning — built, in review (#27).** `POST /v1/tenants/{id}/members/provision`
+(accounts-api lookup-or-create by email → user + membership) and
+`GET /v1/tenants/{id}/dimo-token` (minted developer JWT for the effective
+credential). CredentialService is the only code that decrypts a key at runtime,
+and the key goes exactly one place: a cached dimoauth AuthService, fingerprinted
+so rotation rebuilds it. Effective-credential resolution uses CallerMayAccess's
+exact expression so scope and minting cannot disagree. The new settings
+(`DIMO_AUTH_URL` etc., in chart values.yaml) are deliberately not boot-required —
+authz stays available when the minter is unconfigured.
+
+After it merges and deploys (this service first, as always), two callers remain:
+
+1. **kaufmann proxies the console's add-user** to `/provision`, the same shape
+   as the #198 customer-management proxies.
+2. **b2b flips `STUB_BY_DEFAULT` to false** in `web/src/services/tenancy-service.ts`
+   once every console action is live — its comment describes exactly this.
+
+The minter has no caller yet; it exists for b2b's deferred identity question
+("present each operator's license per request via the token minter") and any
+future caller that would otherwise want the key. Worth knowing before first
+prod use: minting reaches identity-api, which 403s unmeshed callers — the
+service pods are meshed, so this only bites a future unmeshed Job.
 
 **Groups move here** — agreed, not started. See
 [`plans/01-groups-into-tenancy.md`](plans/01-groups-into-tenancy.md). Both apps
