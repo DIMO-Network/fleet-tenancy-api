@@ -24,18 +24,19 @@ func TestPlanPublishes(t *testing.T) {
 	kB := vehKey{tenantID: "tA", tokenID: 2}
 	kC := vehKey{tenantID: "tB", tokenID: 3}
 
-	t.Run("first run publishes every grouped vehicle, and only those", func(t *testing.T) {
+	t.Run("first run plans every grouped vehicle, and only those", func(t *testing.T) {
 		pending, res, err := planPublishes(map[vehKey][]groupAttestationRef{
 			kA: refs("tA_vans"), kB: refs("tA_vans", "tA_prio"),
 		}, map[vehKey]string{})
 		require.NoError(t, err)
 		assert.Len(t, pending, 2)
-		assert.Equal(t, 2, res.Published)
+		assert.Equal(t, 2, res.Planned)
+		assert.Zero(t, res.Published, "the plan reports what it selected; only the wire reports outcomes")
 		assert.Zero(t, res.Retracted)
 	})
 
 	t.Run("unchanged content is unchanged regardless of run count", func(t *testing.T) {
-		pending, res, err := planPublishes(map[vehKey][]groupAttestationRef{kA: refs("tA_vans")}, map[vehKey]string{})
+		pending, _, err := planPublishes(map[vehKey][]groupAttestationRef{kA: refs("tA_vans")}, map[vehKey]string{})
 		require.NoError(t, err)
 		require.Len(t, pending, 1)
 
@@ -44,7 +45,7 @@ func TestPlanPublishes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, pending2, "the second run has nothing to do")
 		assert.Equal(t, 1, res2.Unchanged)
-		assert.Zero(t, res.Retracted)
+		assert.Zero(t, res2.Planned)
 	})
 
 	t.Run("a rename republishes — the digest covers metadata, not just membership", func(t *testing.T) {
@@ -55,7 +56,7 @@ func TestPlanPublishes(t *testing.T) {
 			map[vehKey]string{kA: before[0].digest})
 		require.NoError(t, err)
 		require.Len(t, after, 1)
-		assert.Equal(t, 1, res.Published)
+		assert.Equal(t, 1, res.Planned)
 	})
 
 	t.Run("removal from the last group retracts exactly once", func(t *testing.T) {
@@ -69,7 +70,7 @@ func TestPlanPublishes(t *testing.T) {
 		require.Len(t, retract, 1)
 		assert.Empty(t, retract[0].groups)
 		assert.JSONEq(t, `{"groups":[]}`, string(retract[0].dataJSON))
-		assert.Equal(t, 1, res.Retracted)
+		assert.Equal(t, 1, res.Planned)
 
 		// Next run: state row holds the empty digest → nothing to do.
 		again, res2, err := planPublishes(map[vehKey][]groupAttestationRef{},
@@ -119,4 +120,19 @@ func TestSignERC191(t *testing.T) {
 	recovered, err := crypto.SigToPub(crypto.Keccak256(prefixed), raw)
 	require.NoError(t, err)
 	assert.Equal(t, crypto.PubkeyToAddress(pk.PublicKey), crypto.PubkeyToAddress(*recovered))
+}
+
+// The counters must reconcile: every planned vehicle ends in exactly one
+// outcome. An earlier version summed the plan's count and the publish loop's
+// count into the same field, reporting exactly double on a clean run and
+// inflating success on a partly-failed one.
+func TestPublishResultBalances(t *testing.T) {
+	assert.True(t, (&PublishResult{Planned: 10, Published: 7, Retracted: 2, Failed: 1}).Balances())
+	assert.True(t, (&PublishResult{Planned: 5, Published: 3, SkippedVehicles: 2}).Balances())
+	assert.True(t, (&PublishResult{}).Balances(), "a run with nothing to do balances trivially")
+
+	assert.False(t, (&PublishResult{Planned: 357, Published: 714}).Balances(),
+		"the double-count this check exists to catch")
+	assert.False(t, (&PublishResult{Planned: 10, Published: 7}).Balances(),
+		"three vehicles unaccounted for is not a clean run")
 }

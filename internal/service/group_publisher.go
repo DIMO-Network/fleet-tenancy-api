@@ -74,13 +74,34 @@ func NewGroupPublisher(logger *zerolog.Logger, pdb *db.Store, settings *config.S
 // PublishResult is one run's accounting. Failed > 0 means the run must exit
 // non-zero — a partial publish is not a success, because each unpublished
 // vehicle is one whose outward record is stale.
+//
+// The split between what the scan PLANNED and what the wire ACCEPTED is not
+// cosmetic. An earlier version had planPublishes and the publish loop both
+// incrementing Published, which reported exactly double on a clean run and,
+// worse, would have inflated the success count on a run that partly failed —
+// 300 published against 57 failed printing as 657. The membership backfill
+// hit the same class of bug (counters reporting rows processed rather than
+// rows written). So: the plan owns Checked/Unchanged/Planned, the publish
+// loop owns Published/Retracted/Failed/SkippedVehicles, and the two are
+// reconciled by Balances below rather than trusted.
 type PublishResult struct {
-	Checked        int // vehicles whose digest was compared
-	Published      int
-	Retracted      int // published with an empty group set
+	Checked int // vehicles whose current digest was compared against the recorded one
+	Planned int // vehicles the scan selected to publish
+
+	Published       int // non-empty documents the wire accepted
+	Retracted       int // empty-set documents the wire accepted
+	Failed          int
+	SkippedVehicles int // vehicles under a tenant with no usable credential
+
 	Unchanged      int
-	Failed         int
 	SkippedTenants int // tenants with no usable credential — their vehicles are unpublishable
+}
+
+// Balances reports whether every planned vehicle is accounted for by exactly
+// one outcome. A false here means the accounting is lying, which is worth
+// surfacing even though it does not change what was published.
+func (r *PublishResult) Balances() bool {
+	return r.Planned == r.Published+r.Retracted+r.Failed+r.SkippedVehicles
 }
 
 // vehKey identifies one vehicle within one tenant.
@@ -116,12 +137,13 @@ func (p *GroupPublisher) Run(ctx context.Context, tenantFilter string, dryRun bo
 	}
 
 	if dryRun {
+		// Planned is what a dry run is for, so it is reported as-is. Published
+		// and Retracted stay zero because nothing reached the wire — a dry run
+		// that reported them would be claiming an outcome it did not have.
 		for _, v := range pending {
 			p.logger.Info().Str("tenant_id", v.tenantID).Int64("token_id", v.tokenID).
 				Int("groups", len(v.groups)).Bool("dry_run", true).Msg("would publish vehicle groups attestation")
 		}
-		res.Published = 0
-		res.Retracted = 0
 		return res, nil
 	}
 
@@ -146,6 +168,7 @@ func (p *GroupPublisher) Run(ctx context.Context, tenantFilter string, dryRun bo
 				p.logger.Warn().Str("tenant_id", tenantID).Int("vehicles", len(vehicles)).
 					Msg("tenant has no usable credential — its group attestations cannot be published")
 				res.SkippedTenants++
+				res.SkippedVehicles += len(vehicles)
 				continue
 			}
 			p.logger.Err(err).Str("tenant_id", tenantID).Int("vehicles", len(vehicles)).
@@ -223,11 +246,7 @@ func planPublishes(current map[vehKey][]groupAttestationRef, published map[vehKe
 			tenantID: k.tenantID, tokenID: k.tokenID,
 			groups: groups, dataJSON: data, digest: digest,
 		})
-		if len(groups) == 0 {
-			res.Retracted++
-		} else {
-			res.Published++
-		}
+		res.Planned++
 	}
 	return pending, res, nil
 }
