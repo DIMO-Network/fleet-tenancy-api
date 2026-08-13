@@ -51,6 +51,7 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	authzCtrl := controllers.NewAuthzController(logger, service.NewAuthzService(logger, pdb), tenantSvc, CallerFrom)
 	resolveCtrl := controllers.NewResolveController(logger, tenantSvc, CallerFrom)
 	membersCtrl := controllers.NewMembersController(logger, service.NewMemberService(logger, pdb), tenantSvc, CallerFrom)
+	tenantsCtrl := controllers.NewTenantsController(logger, tenantSvc, CallerFrom)
 
 	// Service-to-service surface. Callers are fleet-lite-app, kaufmann-oracle and
 	// the b2b proxy, authenticating with a DIMO developer-license JWT verified
@@ -98,6 +99,15 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// here whether that member may act, and is told no.
 	v1.Put("/tenants/:tenantId/members/:wallet", membersCtrl.PutMember)
 	v1.Delete("/tenants/:tenantId/members/:wallet", membersCtrl.DeleteMember)
+
+	// The operator console's tenant surface, reached by b2b through kaufmann.
+	// Creating is nested under the operator so the parent is in the path where
+	// the scope check can see it.
+	v1.Get("/operators/:operatorId/children", tenantsCtrl.ListChildren)
+	v1.Post("/operators/:operatorId/customers", tenantsCtrl.CreateCustomer)
+	v1.Get("/tenants/:tenantId", tenantsCtrl.GetTenant)
+	v1.Patch("/tenants/:tenantId", tenantsCtrl.UpdateTenant)
+	v1.Get("/tenants/:tenantId/members", tenantsCtrl.ListMembers)
 
 	return app
 }
