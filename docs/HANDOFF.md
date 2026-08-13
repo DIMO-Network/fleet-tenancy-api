@@ -748,11 +748,44 @@ fleet-lite's 06:00 UTC warm import is the next natural cross-check. The CE
 wire format is untouched; ADR 0001's "storage stays IMEI-keyed" is marked
 superseded.
 
-**P3 is next**: backfill both apps' groups into the tables here, then each app
-reads groups from tenancy behind a flag with a `tenancy-diff`-style comparison
-command, exit on zero differences over a sustained window. Remember the plan's
-risk note: the backfill touches the structure that already caused the
-370-of-378 near-miss — diff before enforcing, always.
+**P3 — BUILT, PRs open, not yet deployed.** Three PRs, one per repo, written
+2026-08-13: this repo #30 (`backfill-groups` + `GET
+/v1/tenants/{id}/vehicle-groups`), fleet-lite #112 and kaufmann #202 (both:
+`GROUPS_FROM_TENANCY` flag flipping the display reads to the new endpoint, plus
+a `groups-diff` command shaped like `tenancy-diff`). **Deploy order is the
+usual one: this service first** — both callers' diffs and flagged reads 404
+into failure against a service without the endpoint. Both flags ship `'false'`.
+
+What the backfill does and why: metadata from the newer side (the #111 rule),
+memberships unioned, and the write **replaces the tables wholesale** so a
+re-run converges on what the sources currently say — which is also the
+recovery for any local group write made during the P3 window, since writes
+stay local until P4. `groups-diff` is asymmetric exactly like `tenancy-diff`:
+`remote-extra` is the union working (the other source asserted it),
+`differ`/`missing-remote` fail the run.
+
+A `backfill-groups -dry-run` against prod (2026-08-13, through the tunnel) was
+already clean: 87 merged groups (81 kaufmann + 84 fleet-lite, 78 overlapping),
+567 merged memberships (535 + 552, 520 overlapping), **zero metadata
+disagreements**, no name collisions, all tenants present, and **zero dangling
+`scope_group_ids` / `source_group_id` references** — so the deferred FK
+migration is unblocked once the backfill has run for real.
+
+Deliberately not flipped by the flags (P4/P5 work, listed so nobody thinks it
+was missed): all group writes, fleet-lite's `LoadVehicleGroups` /
+`VehicleInGroups` / `AccessibleTokenIDs` scope SQL and geofence/invitation
+validation, kaufmann's attestation worker reads, `GetVehiclesOnboarded` joins
+and report filters. The attestation publishers must keep describing what was
+actually written locally.
+
+After deploy, the sequence is: run `backfill-groups` (dry-run, then real), run
+both apps' `groups-diff`, flip `GROUPS_FROM_TENANCY` per app by chart-only
+change, re-run `groups-diff` over a sustained window — exit is zero
+differences. kaufmann's diff names its uncredentialed-tenant coverage gap out
+loud; those tenants' groups are unverifiable through `/v1` until the effective-
+credential question is settled. Remember the plan's risk note: the backfill
+touches the structure that already caused the 370-of-378 near-miss — diff
+before enforcing, always.
 
 ### Decisions taken while building, worth not re-litigating
 
