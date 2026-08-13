@@ -161,7 +161,7 @@ func (s *CredentialService) DeveloperJWT(ctx context.Context, tenantID string) (
 		CredentialTenantID: cred.TenantID,
 	}
 	if exp, err := token.Claims.GetExpirationTime(); err == nil && exp != nil {
-		minted.ExpiresAt = exp.Time.UTC()
+		minted.ExpiresAt = exp.UTC()
 	}
 	return minted, nil
 }
