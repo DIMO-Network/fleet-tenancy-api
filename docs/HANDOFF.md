@@ -1222,6 +1222,88 @@ tests over the ambiguous cases.
 - All three encryption keys differ, so the backfill decrypts per source and
   re-encrypts. All 11 kaufmann credentials decrypt cleanly with the real key
 
+## PICK UP HERE — session handoff, 2026-08-13 evening
+
+Everything below is either open for review or waiting on you. Nothing here is
+half-applied: every change is in a PR, and prod is in a good, verified state.
+
+### Open PRs, all built and gated, none deployed
+
+| PR | What | State |
+|---|---|---|
+| this repo **#35** | docs: P5 split into P5a/P5b, the hazards, the soak criteria | open |
+| fleet-lite **#115** | P5a — scope filtering off the local tables | open, gates green |
+| kaufmann **#205** | P5a — same, plus the scope *source* fix | open, gates green |
+| b2b **#176** | modal footers clipped when the body overflows | open, verified in browser |
+
+**Do not deploy the two P5a PRs yet.** They rewrite filtering on the hottest
+paths in both apps and put vehicle listing on a live dependency on this
+service for limited members. The soak has not run. They are ready when you
+are, and the flag (`GROUPS_FROM_TENANCY`) is still the revert path.
+
+### Prod state as of this evening — all verified, not assumed
+
+P3 and P4 are fully rolled out. `backfill-groups` ran (87 groups, 567
+memberships); both `groups-diff` commands report `differ=0,
+missing_remote=0`; the publisher converged (`checked=357, unchanged=357`) and
+its counter bug is fixed and live (`v0.5.3`); `GROUPS_FROM_TENANCY` is on in
+both apps and **both are demonstrably serving each other's groups**, which no
+local mirror can explain.
+
+`mirror-groups` was dry-run then run for real in both apps — additive only,
+**zero removals** — so both crons are proven before their first unattended
+run (06:15 / 06:30 UTC). Residual `groups-diff` `remote_extra` (5 fleet-lite,
+18 kaufmann) is fully explained: memberships for vehicles that app has not
+synced, which the composite FK structurally forbids mirroring. It disappears
+with the tables.
+
+### The one thing still unverified from P4
+
+**No group write has ever reached this service.** The tenancy pods have
+logged no `fleet group created/updated/deleted` since they started, the
+Kaufmann tenant still holds exactly the 85 groups the backfill produced, and
+the publisher has never reported `planned > 0`. A write was attempted from
+the UI and reported success — most likely the **SINCRONIZAR** button, which
+since P4 is a deliberate no-op that returns current groups and writes
+nothing, so it looks entirely successful.
+
+Five minutes to close: create a group, rename it, delete it, and watch
+`kubectl logs -n prod -l app.kubernetes.io/name=fleet-tenancy-api -c
+fleet-tenancy-api | grep "fleet group"`. That also gives the publisher its
+first real `planned → published` run, which the counter fix has not yet
+exercised.
+
+### P5b is blocked on two things, not one
+
+The soak — and **`access_fleet_groups`**, which has an `ON DELETE CASCADE`
+foreign key to kaufmann's `fleet_groups`. P5a stops the *scope* path reading
+it, but `account.go` still reads and writes it for member management. That
+has to be retired before the table can be dropped.
+
+### Bugs found while doing P5a — one worth acting on
+
+- **fleet-lite's geofence screens leaked tenant-wide vehicle counts to
+  limited members.** `GetGeofences` and `GetGeofence` left the unrestricted
+  count in place when the per-geofence recount errored (`if err != nil {
+  continue }`). Fixed in #115. Same family as everything else here: an error
+  quietly degrading to "unrestricted".
+- `AddVehicle` read "was this new?" *after* the remote write — right only
+  because the mirror lagged. Fixed in #115.
+- `c.Status().JSON()` returns nil, so returning it as a helper's error yields
+  a **200** carrying a 502 body unless the caller compensates. Fixed in #205;
+  the same shape exists in P4's `groupWriteTenant`, which does compensate.
+- **Flagged, not fixed:** `TenantService.UpdateMemberAccess` (fleet-lite)
+  validates group ids not at all, so an owner can scope a member to
+  nonexistent groups — asymmetric with the invite path, which validates.
+  Worth a ticket.
+
+### Reproducing the backfill
+
+`docs/backfill-groups-job.yaml` is the in-cluster Job — deliberately
+**unmeshed** (it only talks to Postgres, so there is no proxy to outlive the
+container). It composes three databases' credentials and forces both sources
+read-only; that is why it is a file rather than a paragraph.
+
 ## Next, in order
 
 Items 1 and 2 of the previous list are done — `DROP_FOREIGN_TENANT_GROUPS` was
