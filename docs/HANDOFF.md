@@ -881,14 +881,27 @@ chart-only, both pods rolled by the chart's `checksum/config` annotation and
 both logging `GROUPS_FROM_TENANCY is on` at boot. **Reads now come from this
 service in production.**
 
-Proven rather than assumed: kaufmann's `/api/v1/fleet-groups`, called with a
-real developer JWT, returns **85** groups including `…_test-luis-saez`,
-`…_verify-qa`, `…_yy` and `…_3Ervzaaxvr…` — four groups fleet-lite created
-that **kaufmann's own table has never held**. Before the flip it could only
-have returned its local 81. That is the read path demonstrably served from
-here, not from the mirror. fleet-lite's equivalent has no traffic and no
-easily-minted user JWT, so it is verified by boot log, identical code shape
-and unit tests, not by probe — worth an eye when its first real request lands.
+Proven rather than assumed, on both sides, using the same trick each way:
+ask an app for a group its own database has never held.
+
+- **kaufmann** — `/api/v1/fleet-groups` with a real developer JWT returns
+  **85** groups including `…_test-luis-saez`, `…_verify-qa`, `…_yy` and
+  `…_3Ervzaaxvr…`, four groups **fleet-lite** created. Before the flip it
+  could only have returned its local 81.
+- **fleet-lite** — signed into `fleets.dimo.co` as the Kaufmann tenant, the
+  Groups screen reports **85 groups** (its own table holds fewer) and
+  `GET /fleet/groups` answers 200. Searching surfaces `DEMOS MAXUS / MD…`,
+  `Eduardo Rodríguez /…` and `Felipe Briceño / DEA…` — precisely the three
+  its own `groups-diff` had listed as *"group only in tenancy"*, i.e. groups
+  **kaufmann** created that fleet-lite's table has never held.
+
+Both apps now display each other's groups, which neither could do before,
+and which no local mirror can explain. The per-vehicle read
+(`VehicleGroupsMapView`) is best-effort by design — it logs and degrades
+rather than failing the page — so it was checked in the logs instead: zero
+group-related errors across the session. fleet-lite's only errors in that
+window were 12 pre-existing SACD `lacks permissions` token-exchange 403s,
+the same benign condition recorded above.
 
 **One bug fell out of the first publisher run** — `published=714` against
 `checked=357`, exactly double, because the plan and the publish loop both

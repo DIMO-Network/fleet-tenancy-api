@@ -1,10 +1,20 @@
 # Agent Guidelines — fleet-tenancy-api
 
-**Status: deployed to prod (2026-08-10), nothing calls it yet.** The schema is
-migrated and backfilled, `/v1` is gated by three layers and serves `authz` and
-`resolve/client-id`, and fleet-lite and kaufmann can authenticate to it. No
-caller's request path uses it — cutover is still ahead. The rest of the surface
-in the design spec (`/v1/tenants`, the token minter, `/user/v1`) is not built.
+**Status: live in prod and load-bearing.** Both callers authorize every
+request against `GET /v1/authz` (cutover 2026-08-11) and both write
+memberships here (2026-08-12). Since 2026-08-13 this service also **owns
+fleet groups**: both apps write groups here, read them from here behind
+`GROUPS_FROM_TENANCY`, and their attestation import/reconcile machinery is
+deleted — this service is the single publisher of
+`dimo.document.vehicle.groups`. The operator console (b2b, via kaufmann's
+proxies), the token minter and on-behalf provisioning are also live.
+
+`/user/v1` remains unbuilt. What is left of the groups move is P5 — retiring
+the callers' local group tables — see `docs/HANDOFF.md`.
+
+**Consequence worth internalising: an outage here is an outage there.** Both
+apps fail closed on `/v1/authz` (503, deliberately not 403), and group writes
+fail the request rather than reporting a success the owner never saw.
 
 ## What this service is
 
