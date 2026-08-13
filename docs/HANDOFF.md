@@ -667,24 +667,38 @@ empty commit to trigger it.
 unrecognised route is a 404, which kaufmann treats as a failure, so shipping a
 caller ahead of its endpoints turns every affected write into a 502.
 
-### What is left
+### Provisioning — DONE END TO END, 2026-08-13
 
-**Provisioning — built, in review (#27).** `POST /v1/tenants/{id}/members/provision`
-(accounts-api lookup-or-create by email → user + membership) and
+The console is fully live; the stub is a demo mode, no longer the default.
+
+| Repo | PRs | Released |
+|---|---|---|
+| this | #27 provisioning + minter, #28 provision answers with the member | `v0.4.1`, image `239a4b2`, rollout verified |
+| kaufmann | #200 provision/PATCH/DELETE member proxies | `v1.45.0`, rolled out clean |
+| b2b | #175 proxy routes + `STUB_BY_DEFAULT = false` | `v1.6.17` |
+
+`POST /v1/tenants/{id}/members/provision` (accounts-api lookup-or-create by
+email → user + membership, answering with the written member) and
 `GET /v1/tenants/{id}/dimo-token` (minted developer JWT for the effective
 credential). CredentialService is the only code that decrypts a key at runtime,
 and the key goes exactly one place: a cached dimoauth AuthService, fingerprinted
 so rotation rebuilds it. Effective-credential resolution uses CallerMayAccess's
 exact expression so scope and minting cannot disagree. The new settings
-(`DIMO_AUTH_URL` etc., in chart values.yaml) are deliberately not boot-required —
+(`DIMO_AUTH_URL` etc., chart values.yaml) are deliberately not boot-required —
 authz stays available when the minter is unconfigured.
 
-After it merges and deploys (this service first, as always), two callers remain:
+kaufmann's PATCH proxy does the read-modify-write (the tenancy PUT replaces
+wholesale, deliberately), via `MergeMemberUpdate` — every field tri-state,
+nil-vs-empty scope preserved. b2b's routes are plain proxy entries; no view
+changes were needed, the frontend already spoke the live protocol.
 
-1. **kaufmann proxies the console's add-user** to `/provision`, the same shape
-   as the #198 customer-management proxies.
-2. **b2b flips `STUB_BY_DEFAULT` to false** in `web/src/services/tenancy-service.ts`
-   once every console action is live — its comment describes exactly this.
+**Nothing has exercised provisioning against real accounts-api yet** — that
+needs a real email and creates a real DIMO account, so it was left for the
+first deliberate console use rather than a synthetic prod probe. First-use
+checklist: watch this service's logs for `member provisioned`, and if creation
+fails check the effective credential has a `signer_address` (ErrNoSignerAddress
+is a 409) and that the license is allowlisted with accounts-api (a lookup that
+answers without a wallet is a 502 naming the client id).
 
 The minter has no caller yet; it exists for b2b's deferred identity question
 ("present each operator's license per request via the token minter") and any
@@ -1016,10 +1030,15 @@ What remains:
      only call path, so the one-off wallet-checksum repair it carries no longer
      runs. Left in place deliberately rather than deleted as a side effect
    - ~~Fix the two Kaufmann-tenant memberships~~ — reviewed and accepted 2026-08-11
-3. The DIMO token minter (`GET /v1/tenants/{id}/dimo-token`), so credentials
-   never leave this service
-4. `/user/v1` management surface, then the b2b operator console — which is also
-   when b2b's own identity question stops being deferrable
+3. ~~The DIMO token minter~~ — **done 2026-08-13** (#27, `v0.4.1`). No caller
+   yet; see the provisioning section above
+4. The b2b operator console — **live 2026-08-13**, reached through kaufmann's
+   proxies rather than a `/user/v1` surface. `/user/v1` remains unbuilt and is
+   now driven by fleet-lite's needs (invitations, self-serve member CRUD), not
+   the console's; b2b's own identity question stays deferred until something
+   needs b2b to call this service directly
+5. Groups move here — the plan in `plans/01-groups-into-tenancy.md`, agreed
+   ordering recorded above (P1 ∥ P2, then P3 → P4 → P5)
 
 ## Running things
 
