@@ -139,9 +139,76 @@ with `DROP_FOREIGN_TENANT_GROUPS`. Publishing moves to a single publisher.
 
 **Exit:** one writer, one publisher, no importer.
 
-### P5 — Drop the local tables
+### P5 — Retire the local tables
 
-Only after a full retention period with no fallback reads.
+Written as one line originally. Surveying both repos after P4 shipped showed
+it is two phases with a blocker in between, so it is split.
+
+#### P5a — Move the last readers off the local tables
+
+P4 left the local tables load-bearing for one thing: **scope filtering**.
+Every "which vehicles may this limited member see" question is still a SQL
+join against them, on the hottest paths in both apps.
+
+These become cached, tenancy-backed token-id sets.
+`GET /v1/tenants/{id}/vehicle-groups` already returns every group with its
+full member set, so one cached call per tenant answers all of it — scope,
+counts, and the group names decorating vehicle rows.
+
+| App | What still reads the local tables |
+|---|---|
+| fleet-lite | `AccessibleTokenIDs`, `allowedGroupsFilter` (a subquery inside the vehicles query), `VehicleInGroups`, `LoadVehicleGroups`, `GroupMemberTokenIDs`, geofence `EffectiveTokenIDs` + its per-geofence count, `normalizeGroups`, `validateGroupIDs` |
+| kaufmann | `GetVehiclesOnboarded`'s group join and accessible-group subquery plus its eager load, `mapVehicle`, the console's vehicle decoration, `vinGroupFilterMod` and the group names in the distance and export reports |
+
+Three hazards, all recorded because each has a precedent in this programme:
+
+1. **An empty token-id set must match zero vehicles, never "no filter".**
+   `if len(ids) > 0 { apply }` hands a member scoped to empty or
+   vehicle-less groups the entire fleet. That is the inversion that gave 131
+   memberships a 524-vehicle fleet during the backfill, wearing a new
+   costume.
+2. **kaufmann's scope source is itself still wrong.** It reads
+   `access_fleet_groups` by wallet with **no tenant column**, so scope spans
+   every tenant a member belongs to. The authz answer already in request
+   locals carries the correct per-tenant `scopeGroupIds` for free, cached
+   60s, and `view_all_fleets` — which the shared model deleted — collapses
+   into `Unrestricted()`. `tenancy-diff` compares exactly these two and
+   currently reports `differ=0`, so the switch is a provable no-op per
+   wallet. That is the gate for making it.
+3. **The two nil conventions are inverted.** `GetUserFleetAccess` returns
+   nil for "no groups"; `AuthzResult.ScopeGroupIDs` nil means
+   "unrestricted". A normalisation compensating for the old convention
+   already exists in the report worker. It must be re-examined, not copied.
+
+Also: `GetVehiclesOnboarded` applies its group predicate to the paging
+`Count` as well as the page, inside one transaction. An in-memory filter has
+to keep `totalCount` consistent or paging silently breaks.
+
+**Exit:** nothing but the mirror tooling reads the tables, and both apps'
+`groups-diff` still clean.
+
+#### P5b — Drop them
+
+**Blocker found in the survey:** kaufmann's `access_fleet_groups` has an
+`ON DELETE CASCADE` foreign key to `fleet_groups`, so that table cannot be
+dropped until `access_fleet_groups` itself is retired — which P5a starts by
+removing its readers from the scope path, but `account.go` still reads and
+writes it for the member-management surface.
+
+Then, and only after the soak: drop `fleet_groups` / `vehicle_fleet_groups`
+/ `vin_fleet_groups`, the `mirror-groups` crons and commands, `groups-diff`,
+the `GROUPS_FROM_TENANCY` flags and their local branches, fleet-lite's dead
+`vehicles.groups_updated_at` and `last_group_sync_at` columns,
+`SyncVehicleGroups` with its frontend caller, and the stale `GROUP_SYNC.md`
+/ `FLEET_GROUPS_PLAN.md`. Add the deferred references from
+`scope_group_ids` / `source_group_id` — both are **arrays**, so that is a
+trigger or a check constraint, not a plain foreign key.
+
+**The soak is the point, not a formality.** "A full retention period with no
+fallback reads" means: `GROUPS_FROM_TENANCY` on in both apps, `groups-diff`
+clean across several days, the publisher converging, and no revert. Reads
+flipped 2026-08-13; dropping the same day would discard the only evidence
+the move worked, and the tables are the revert path until then.
 
 ## Risks
 
