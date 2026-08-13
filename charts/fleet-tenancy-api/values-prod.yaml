@@ -25,6 +25,8 @@ env:
   DB_MAX_IDLE_CONNECTIONS: '6'
   DB_SSL_MODE: require
   JWT_KEY_SET_URL: https://auth.dimo.zone/keys
+  ATTEST_API_URL: http://dis-prod-attest.prod.svc.cluster.local:8080
+  CHAIN_ID: '137'
 service:
   type: ClusterIP
   ports:

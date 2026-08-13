@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
@@ -15,6 +17,7 @@ import (
 	"github.com/DIMO-Network/shared/pkg/db"
 	"github.com/DIMO-Network/shared/pkg/dimoauth"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/rs/zerolog"
 )
 
@@ -164,6 +167,54 @@ func (s *CredentialService) DeveloperJWT(ctx context.Context, tenantID string) (
 		minted.ExpiresAt = exp.UTC()
 	}
 	return minted, nil
+}
+
+// SignAsTenant signs message with the tenant's effective developer-license
+// private key, ERC-191 style ("\x19Ethereum Signed Message:\n<len><msg>",
+// keccak256, secp256k1, V normalised to 27/28) — byte-identical to what both
+// source apps' attestation publishers produced, so verifiers cannot tell the
+// producer changed. Returns the credential alongside so the caller can build
+// the event's source without a second resolution.
+//
+// The key is decrypted, used, and discarded here — it does not leave this
+// service, same rule as the minter.
+func (s *CredentialService) SignAsTenant(ctx context.Context, tenantID string, message []byte) (string, *EffectiveCredential, error) {
+	cred, keyEnc, err := s.effectiveWithKey(ctx, tenantID)
+	if err != nil {
+		return "", nil, err
+	}
+	if keyEnc == "" {
+		return "", nil, fmt.Errorf("credential of tenant %s (client id %s) has no API key stored: %w",
+			cred.TenantID, cred.ClientID, ErrNoCredential)
+	}
+	privateKeyHex, err := DecryptSecret(s.settings.TenantSecretEncKey, keyEnc)
+	if err != nil {
+		return "", nil, fmt.Errorf("decrypt credential of tenant %s: %w", cred.TenantID, err)
+	}
+	sig, err := signERC191(message, privateKeyHex)
+	if err != nil {
+		return "", nil, fmt.Errorf("sign as tenant %s: %w", cred.TenantID, err)
+	}
+	return sig, cred, nil
+}
+
+// signERC191 is the personal_sign scheme both source apps used (kaufmann's
+// vinvc.SignMessage, fleet-lite's signDataSecp256k1): 0x-prefixed hex of the
+// 65-byte signature with V as 27/28.
+func signERC191(message []byte, privateKeyHex string) (string, error) {
+	pk, err := crypto.HexToECDSA(strings.TrimPrefix(privateKeyHex, "0x"))
+	if err != nil {
+		return "", fmt.Errorf("parse private key: %w", err)
+	}
+	prefixed := fmt.Sprintf("\x19Ethereum Signed Message:\n%d%s", len(message), message)
+	sig, err := crypto.Sign(crypto.Keccak256([]byte(prefixed)), pk)
+	if err != nil {
+		return "", err
+	}
+	if sig[64] < 27 {
+		sig[64] += 27
+	}
+	return "0x" + hex.EncodeToString(sig), nil
 }
 
 // minterFor returns the cached AuthService for a client id, building one on

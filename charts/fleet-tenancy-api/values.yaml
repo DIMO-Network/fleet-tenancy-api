@@ -30,6 +30,8 @@ env:
   VEHICLE_NFT_ADDRESS: '0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF'
   IDENTITY_API_ENDPOINT: https://identity-api.dimo.zone/query
   ACCOUNTS_API_ENDPOINT: https://accounts.dimo.org
+  ATTEST_API_URL: https://attest.dimo.zone
+  CHAIN_ID: '137'
 service:
   type: ClusterIP
   ports:
@@ -58,3 +60,13 @@ tolerations: []
 affinity: {}
 podDisruptionBudget:
   minAvailable: 0
+# The single publisher of dimo.document.vehicle.groups (P4 of the groups
+# move). A CronJob rather than a goroutine in the API: per-vehicle publishing
+# is heavy background work and must not share the fate of /v1/authz. The
+# template owns the linkerd inject + proxy-shutdown wrapper.
+cronJobs:
+  - name: publish-group-attestations
+    enabled: true
+    schedule: '*/10 * * * *'
+    script: |
+      /fleet-tenancy-api publish-group-attestations

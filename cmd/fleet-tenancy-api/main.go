@@ -53,6 +53,7 @@ func main() {
 		subcommands.Register(&migrateDBCmd{logger: logger, settings: settings}, "database")
 		subcommands.Register(&backfillCmd{logger: logger, settings: settings}, "database")
 		subcommands.Register(&backfillGroupsCmd{logger: logger, settings: settings}, "database")
+		subcommands.Register(&publishGroupAttestationsCmd{logger: logger, settings: settings}, "attestations")
 		flag.Parse()
 		os.Exit(int(subcommands.Execute(ctx)))
 	}
