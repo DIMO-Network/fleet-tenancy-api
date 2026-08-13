@@ -40,6 +40,24 @@ func (c *GroupsController) ListGroups(ctx *fiber.Ctx) error {
 	return ctx.JSON(out)
 }
 
+// ListVehicleGroups — GET /v1/tenants/:tenantId/vehicle-groups
+//
+// The whole group structure of a tenant, memberships included, in one
+// response. Callers' vehicle screens and the P3 groups-diff both want the
+// full picture; serving it in one request keeps it consistent — a per-group
+// walk could interleave with a backfill and stitch together two states.
+func (c *GroupsController) ListVehicleGroups(ctx *fiber.Ctx) error {
+	tenantID := ctx.Params("tenantId")
+	if err := c.assertScope(ctx, tenantID, "list vehicle groups"); err != nil {
+		return err
+	}
+	out, err := c.groups.ListWithVehicles(ctx.Context(), tenantID)
+	if err != nil {
+		return c.mapError(ctx, tenantID, "list vehicle groups", err)
+	}
+	return ctx.JSON(fiber.Map{"groups": out})
+}
+
 // CreateGroup — POST /v1/tenants/:tenantId/groups
 func (c *GroupsController) CreateGroup(ctx *fiber.Ctx) error {
 	tenantID := ctx.Params("tenantId")

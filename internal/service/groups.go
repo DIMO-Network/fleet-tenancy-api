@@ -98,6 +98,54 @@ func (s *GroupService) List(ctx context.Context, tenantID string) ([]models.Flee
 	return out, nil
 }
 
+// ListWithVehicles returns the tenant's groups with their full member sets in
+// one query. This is the whole-tenant read both apps' vehicle screens need and
+// the one the P3 groups-diff compares — served in one round trip so a caller
+// never assembles it from N per-group requests against a moving table.
+func (s *GroupService) ListWithVehicles(ctx context.Context, tenantID string) ([]models.FleetGroupVehicles, error) {
+	rows, err := s.pdb.DBS().Reader.QueryContext(ctx, `
+		SELECT fg.id, fg.tenant_id, fg.name, fg.color,
+		       COALESCE(array_agg(v.vehicle_token_id ORDER BY v.vehicle_token_id)
+		                FILTER (WHERE v.vehicle_token_id IS NOT NULL), '{}'),
+		       fg.created_at, fg.updated_at
+		  FROM fleet_groups fg
+		  LEFT JOIN vehicle_fleet_groups v
+		    ON v.fleet_group_id = fg.id AND v.tenant_id = fg.tenant_id
+		 WHERE fg.tenant_id = $1
+		 GROUP BY fg.id, fg.tenant_id, fg.name, fg.color, fg.created_at, fg.updated_at
+		 ORDER BY fg.name`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list vehicle groups of %s: %w", tenantID, err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	out := []models.FleetGroupVehicles{}
+	for rows.Next() {
+		var (
+			g                    models.FleetGroupVehicles
+			tokenIDs             pq.Int64Array
+			createdAt, updatedAt sql.NullTime
+		)
+		if err := rows.Scan(&g.ID, &g.TenantID, &g.Name, &g.Color, &tokenIDs,
+			&createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan vehicle group: %w", err)
+		}
+		g.TokenIDs = []int64(tokenIDs)
+		g.VehicleCount = len(g.TokenIDs)
+		if createdAt.Valid {
+			g.CreatedAt = createdAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
+		}
+		if updatedAt.Valid {
+			g.UpdatedAt = updatedAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
+		}
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list vehicle groups of %s: %w", tenantID, err)
+	}
+	return out, nil
+}
+
 // Get returns one group of the tenant.
 func (s *GroupService) Get(ctx context.Context, tenantID, groupID string) (*models.FleetGroup, error) {
 	row := s.pdb.DBS().Reader.QueryRowContext(ctx, `

@@ -131,6 +131,21 @@ func TestGroupVehicles(t *testing.T) {
 		assert.Equal(t, []int64{101, 103}, got)
 	})
 
+	t.Run("the whole-tenant view carries every group with its members", func(t *testing.T) {
+		got, err := svc.ListWithVehicles(ctx, custTenant)
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+		assert.Equal(t, "Priority", got[0].Name, "ordered by name")
+		assert.Equal(t, []int64{101}, got[0].TokenIDs)
+		assert.Equal(t, "Vans", got[1].Name)
+		assert.Equal(t, []int64{101, 103}, got[1].TokenIDs)
+		assert.Equal(t, 2, got[1].VehicleCount)
+
+		other, err := svc.ListWithVehicles(ctx, opTenant)
+		require.NoError(t, err)
+		assert.Empty(t, other, "another tenant sees nothing of it")
+	})
+
 	t.Run("membership writes require the group to be the tenant's", func(t *testing.T) {
 		err := svc.AddVehicles(ctx, opTenant, g.ID, []int64{999})
 		assert.ErrorIs(t, err, ErrGroupNotFound,

@@ -20,6 +20,16 @@ type FleetGroup struct {
 	UpdatedAt    string `json:"updatedAt"`
 }
 
+// FleetGroupVehicles is one group with its full member set — the shape of
+// GET /v1/tenants/{id}/vehicle-groups, which exists so a caller can read a
+// tenant's whole group structure in one request. Both apps need that view on
+// their vehicle-list screens, and the P3 groups-diff needs it to compare a
+// tenant without a per-group request storm.
+type FleetGroupVehicles struct {
+	FleetGroup
+	TokenIDs []int64 `json:"tokenIds"`
+}
+
 // CreateGroupInput is the body of POST /v1/tenants/{id}/groups.
 type CreateGroupInput struct {
 	Name  string `json:"name"`
