@@ -142,6 +142,7 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// endpoints served, no caller yet. Both apps still own their local copies;
 	// P3's backfill and flagged reads are what start pointing them here.
 	v1.Get("/tenants/:tenantId/groups", groupsCtrl.ListGroups)
+	v1.Get("/tenants/:tenantId/vehicle-groups", groupsCtrl.ListVehicleGroups)
 	v1.Post("/tenants/:tenantId/groups", groupsCtrl.CreateGroup)
 	v1.Patch("/tenants/:tenantId/groups/:groupId", groupsCtrl.UpdateGroup)
 	v1.Delete("/tenants/:tenantId/groups/:groupId", groupsCtrl.DeleteGroup)
