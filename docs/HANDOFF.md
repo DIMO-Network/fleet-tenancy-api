@@ -626,6 +626,80 @@ fleet-lite's `ErrorHandler` has the same problem this service had before
 normal answer for a non-member, that will feed error-rate alerting. kaufmann's
 equivalent should be checked too. One-line fix, same shape as `#15` here.
 
+## The operator console — IN FLIGHT 2026-08-12
+
+`b2b-fleet-mgr-app` is being built into the operator console, with this service
+growing the surface behind it. **Nine PRs are open in three stacks**, each
+stacked where it genuinely depends on the one below rather than for
+convenience. Review bottom-up.
+
+| Repo | PR | Base | What |
+|---|---|---|---|
+| this | [#22](https://github.com/DIMO-Network/fleet-tenancy-api/pull/22) | — | **merged, deployed `v0.2.0`** — membership writes |
+| this | #23 | `main` | tenant management surface (children, create, patch, members) |
+| this | #24 | #23 | vehicle entitlements + exclusivity + isolation suite |
+| kaufmann | #197 | `main` | membership write-through |
+| kaufmann | #198 | #197 | customer-management proxy |
+| kaufmann | #199 | #198 | vehicle-entitlement proxy |
+| b2b | #171 | `main` | the console, against a stub |
+| b2b | #173 | #171 | live proxy routes |
+| b2b | #174 | #173 | Vehicles tab wired, hydration + drift |
+
+**Deploy order is load-bearing.** This service first, every time: an
+unrecognised route is a 404, which kaufmann treats as a failure, so shipping a
+caller ahead of its endpoints turns every affected write into a 502.
+
+### What is left
+
+**Provisioning** — `POST /v1/tenants/{id}/members/provision`, accounts-api
+lookup-or-create by email, plus the DIMO token minter. It is the last thing the
+console needs and the first time this service handles decrypted credential
+material at runtime, so it deserves more care than the slices before it.
+`dimoauth` is already in the dependency tree. Until it lands, b2b's stub flag
+stays defaulted on: everything except adding a user is live, and a console where
+one action 404s is harder to reason about than one that is honestly fake.
+
+**Groups move here** — agreed, not started. See
+[`plans/01-groups-into-tenancy.md`](plans/01-groups-into-tenancy.md). Both apps
+keep near-identical `fleet_groups` tables and both synchronise the same
+CloudEvent independently, which is the single cause behind six of the traps
+below. It also makes `scope_group_ids` and `source_group_id` real references
+instead of bare text pointing into databases this service cannot see.
+
+### Decisions taken while building, worth not re-litigating
+
+- **Suspension now removes access** (#23). `tenantStatus` had ridden along on
+  every authz response since the first release and no caller ever read it, so
+  suspending a tenant was decorative. Enforced in `Authorize`, which makes it
+  true everywhere with no caller change. Delegated management is refused too —
+  otherwise suspending a customer locks its operator out of the screen used to
+  un-suspend it. Safe to deploy because the only `INSERT INTO tenants` is the
+  backfill, which never sets `status`.
+- **Exclusivity is enforced twice** (#24). The service applies the rule as
+  specified, per operator, with the holder's name for the console; a partial
+  unique index enforces the stricter one-active-holder-per-vehicle as a
+  backstop, because the service check reads before it writes and the failure
+  mode of that race is one customer seeing another's vehicle.
+- **`manage_vehicles` is derived from `is_admin`** on every kaufmann membership
+  write (#197). It exists only in the shared model, and since a write replaces
+  the capability set, sending only the translated list would have stripped it
+  from every admin the console touched.
+- **Drift is computed in b2b, not served** (#174). It needs the oracle's current
+  group membership and this service's entitlements, and only the console sees
+  both. The spec's `GET /vehicles/drift` was dropped rather than built. This
+  changes if groups move here.
+- **New routes gate on `manage_members`**, not the access middleware's "at least
+  one capability" approximation, which exists to reproduce the old `is_admin`
+  on routes that already existed.
+
+### Local development note
+
+`b2b-fleet-mgr-app`'s `api/settings.yaml` had `MONITORING_PORT: 3010`, which
+collides with this service's local `make run`. Changed to 3011 locally; that
+file is gitignored. `make dev` in b2b also leaked its backend on Ctrl-C — `go
+run` was in the foreground and the compiled binary outlived the wrapper, keeping
+port 3007 — fixed in b2b #171.
+
 ## The write half was never cut over — FIXED 2026-08-12
 
 Cutover moved the **read**. Every membership **write** stayed in kaufmann's
