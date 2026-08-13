@@ -876,18 +876,37 @@ generalises: **the backfill is not a follow-up to a write cutover, it is a
 precondition for it.** If this is ever re-derived (a new environment, a
 restored database), run the backfill before the callers ship, not after.
 
-The flag flips are open as chart-only PRs: fleet-lite #114, kaufmann #204.
+**The flag flips are merged and live** — fleet-lite #114, kaufmann #204, both
+chart-only, both pods rolled by the chart's `checksum/config` annotation and
+both logging `GROUPS_FROM_TENANCY is on` at boot. **Reads now come from this
+service in production.**
+
+Proven rather than assumed: kaufmann's `/api/v1/fleet-groups`, called with a
+real developer JWT, returns **85** groups including `…_test-luis-saez`,
+`…_verify-qa`, `…_yy` and `…_3Ervzaaxvr…` — four groups fleet-lite created
+that **kaufmann's own table has never held**. Before the flip it could only
+have returned its local 81. That is the read path demonstrably served from
+here, not from the mirror. fleet-lite's equivalent has no traffic and no
+easily-minted user JWT, so it is verified by boot log, identical code shape
+and unit tests, not by probe — worth an eye when its first real request lands.
 
 **One bug fell out of the first publisher run** — `published=714` against
 `checked=357`, exactly double, because the plan and the publish loop both
 incremented the same counter. Nothing published twice (the next run's
 `unchanged=357` proves it); only the accounting lied, and it would have lied
 worst on a partly-failed run by inflating the success count. Fixed in `#32`,
-which also makes the command fail when the counts do not reconcile. Third
-time this programme has been bitten by a counter that measured the wrong
-thing — after the backfill's rows-processed-not-written and the sync's
+released `v0.5.3` (image `a1a53ce`), which also makes the command fail when
+the counts do not reconcile. Verified live: the run after the rollout reports
+`checked=357, planned=0, unchanged=357` with the new fields and no imbalance.
+Third time this programme has been bitten by a counter that measured the
+wrong thing — after the backfill's rows-processed-not-written and the sync's
 `changed=0`-means-two-things. **Counters here are load-bearing evidence;
 give them an invariant that can fail.**
+
+Post-deploy state, 2026-08-13 19:41 UTC: both `groups-diff`s still
+`differ=0, missing_remote=0`; zero errors in this service and fleet-lite;
+kaufmann's only two error lines are the pre-existing benign SACD
+token-exchange 403 and a ruptela ingest packet. Zero restarts anywhere.
 
 ### P5 — what remains
 
