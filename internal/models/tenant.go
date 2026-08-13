@@ -81,3 +81,51 @@ type Member struct {
 	LastLoginAt       *string  `json:"lastLoginAt"`
 	CreatedAt         string   `json:"createdAt"`
 }
+
+// Entitlement is one vehicle a tenant may see.
+//
+// Token id and provenance only — VIN, plate and model belong to the oracle. A
+// copy of them here would be a second, staler source of fleet data, and this
+// service is deliberately not one.
+type Entitlement struct {
+	VehicleTokenID int64  `json:"vehicleTokenId"`
+	Source         string `json:"source"`
+	// SourceGroupID names an OPERATOR-side fleet group used to select vehicles
+	// at assign time. Provenance only, never a cross-tenant link: the
+	// customer's own groups are separate and theirs. It is what makes drift
+	// knowable — the caller diffs it against the group's current membership,
+	// which only the caller can see.
+	SourceGroupID   *string `json:"sourceGroupId"`
+	GrantedByWallet *string `json:"grantedByWallet"`
+	CreatedAt       string  `json:"createdAt"`
+}
+
+// AssignVehiclesInput assigns vehicles to a tenant.
+//
+// TokenIDs arrives already expanded. When an operator bulk-assigns a fleet
+// group, the caller resolves that group to token ids against its own system —
+// kaufmann's operator groups for b2b, fleet-lite's own for fleet-lite — and
+// sends the list plus the group as provenance. This service records which group
+// they came from and stays free of fleet-domain concepts.
+type AssignVehiclesInput struct {
+	TokenIDs []int64 `json:"tokenIds"`
+	// FromGroupID is optional provenance for a bulk assign-by-group.
+	FromGroupID string `json:"fromGroupId,omitempty"`
+}
+
+// RejectedVehicle is one vehicle an assignment could not take.
+type RejectedVehicle struct {
+	TokenID int64  `json:"tokenId"`
+	Reason  string `json:"reason"`
+	HeldBy  string `json:"heldBy"`
+}
+
+// AssignResult reports a partial success.
+//
+// Partial is the normal outcome, not an error: an operator selecting forty
+// vehicles, two of which another customer holds, wants the thirty-eight and an
+// account of the two — not a failed request with no way to tell which two.
+type AssignResult struct {
+	Assigned []int64           `json:"assigned"`
+	Rejected []RejectedVehicle `json:"rejected"`
+}

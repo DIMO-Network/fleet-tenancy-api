@@ -52,6 +52,8 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	resolveCtrl := controllers.NewResolveController(logger, tenantSvc, CallerFrom)
 	membersCtrl := controllers.NewMembersController(logger, service.NewMemberService(logger, pdb), tenantSvc, CallerFrom)
 	tenantsCtrl := controllers.NewTenantsController(logger, tenantSvc, CallerFrom)
+	entitlementsCtrl := controllers.NewEntitlementsController(logger,
+		service.NewEntitlementService(logger, pdb), tenantSvc, CallerFrom)
 
 	// Service-to-service surface. Callers are fleet-lite-app, kaufmann-oracle and
 	// the b2b proxy, authenticating with a DIMO developer-license JWT verified
@@ -108,6 +110,13 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	v1.Get("/tenants/:tenantId", tenantsCtrl.GetTenant)
 	v1.Patch("/tenants/:tenantId", tenantsCtrl.UpdateTenant)
 	v1.Get("/tenants/:tenantId/members", tenantsCtrl.ListMembers)
+
+	// Which vehicles a customer may see. This is the isolation boundary: under
+	// D2/D5 it is not enforced by the chain, so these rows are what keeps one
+	// customer's telemetry away from another.
+	v1.Get("/tenants/:tenantId/vehicles", entitlementsCtrl.ListVehicles)
+	v1.Post("/tenants/:tenantId/vehicles", entitlementsCtrl.AssignVehicles)
+	v1.Delete("/tenants/:tenantId/vehicles/:tokenId", entitlementsCtrl.RevokeVehicle)
 
 	return app
 }
