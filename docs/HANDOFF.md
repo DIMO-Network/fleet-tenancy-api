@@ -723,6 +723,37 @@ backfill-and-diff, P4's write cutover and P5's table drops are strictly ordered
 behind them. b2b's Vehicles-tab drift computation (#174) is deleted in P4's
 wake, not before — it is the stopgap the plan replaces.
 
+**P1 — DONE, deployed 2026-08-13.** #29, `v0.5.0`. `fleet_groups` +
+`vehicle_fleet_groups` (keyed by vehicle_token_id, membership FK carries
+tenant_id so a row cannot cross tenants) and the full CRUD + membership
+surface under `/v1/tenants/{id}/groups`, no caller. Migration `20260813120000`
+verified applied in prod. Ids are the R1 `<tenant-uuid>_<slug>` convention,
+minted by a slugify matching fleet-lite's byte for byte; rename keeps the id.
+The name-uniqueness rule is exact-case per tenant, deliberately matching what
+the sources enforce so P3's backfill cannot be refused rows.
+
+**P2 — DONE, deployed 2026-08-13.** kaufmann #201, `v1.46.0`, migration
+`20260813123000` applied in prod. `vin_fleet_groups` keys on
+`vehicle_token_id`; rows whose vin had no token id (unminted, unreachable
+through the API) were dropped by the migration. The RAISE NOTICE with the
+dropped count was **not captured** — goose does not surface NOTICEs — but the
+loss is bounded by construction (only NULL-token rows, each API-invisible),
+and two prod dry-runs verified the re-keyed paths end to end:
+`import-group-attestations -dry-run` → `checked=462, changed=0` (the table
+agrees with published foreign attestations exactly), and
+`resync-group-attestations -dry-run -skip-empty` → `total=462,
+skipped_empty=127`, exercising the rewritten LoadVehicleGroups per vehicle
+with zero errors. 335 vehicles sit in at least one group post-re-key.
+fleet-lite's 06:00 UTC warm import is the next natural cross-check. The CE
+wire format is untouched; ADR 0001's "storage stays IMEI-keyed" is marked
+superseded.
+
+**P3 is next**: backfill both apps' groups into the tables here, then each app
+reads groups from tenancy behind a flag with a `tenancy-diff`-style comparison
+command, exit on zero differences over a sustained window. Remember the plan's
+risk note: the backfill touches the structure that already caused the
+370-of-378 near-miss — diff before enforcing, always.
+
 ### Decisions taken while building, worth not re-litigating
 
 - **Suspension now removes access** (#23). `tenantStatus` had ridden along on
