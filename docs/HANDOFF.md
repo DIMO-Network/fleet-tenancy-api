@@ -1222,80 +1222,141 @@ tests over the ambiguous cases.
 - All three encryption keys differ, so the backfill decrypts per source and
   re-encrypts. All 11 kaufmann credentials decrypt cleanly with the real key
 
-## PICK UP HERE — session handoff, 2026-08-13 evening
+## PICK UP HERE — session handoff, 2026-08-14 ~03:00 UTC
 
-Everything below is either open for review or waiting on you. Nothing here is
-half-applied: every change is in a PR, and prod is in a good, verified state.
+**P5a is complete, deployed to both apps, and its exit criterion is met.**
+Everything the previous handoff listed as open or unverified is resolved.
+Nothing is half-applied and no PR is waiting for review.
 
-### Open PRs, all built and gated, none deployed
+### Shipped tonight — five prod releases, each verified in the cluster
 
-| PR | What | State |
-|---|---|---|
-| this repo **#35** | docs: P5 split into P5a/P5b, the hazards, the soak criteria | open |
-| fleet-lite **#115** | P5a — scope filtering off the local tables | open, gates green |
-| kaufmann **#205** | P5a — same, plus the scope *source* fix | open, gates green |
-| b2b **#176** | modal footers clipped when the body overflows | open, verified in browser |
+| Release | Contents |
+|---|---|
+| fleet-lite **v0.8.0** | P5a (#115), the group **Sync** button removed (#116), the sync route dropped (#118), #114 |
+| fleet-lite **v0.8.1** | group counts stale after a write + VIN/plate in the vehicle picker (#119), members-first sort (#120) |
+| kaufmann **#205** | P5a — scope rewrite plus the scope *source* fix |
+| kaufmann **#206** | device-type filter on the pending-onboard list |
+| b2b **v1.8.0** | device-type filter UI (#177), onboarding list refresh after minting (#178) |
 
-**Do not deploy the two P5a PRs yet.** They rewrite filtering on the hottest
-paths in both apps and put vehicle listing on a live dependency on this
-service for limited members. The soak has not run. They are ready when you
-are, and the flag (`GROUPS_FROM_TENANCY`) is still the revert path.
+Every rollout was checked for image, pod readiness, restart count and ArgoCD
+health. **Zero restarts across all five.** Both apps log `GROUPS_FROM_TENANCY
+is on` at startup.
 
-### Prod state as of this evening — all verified, not assumed
+### P5a's exit criterion — MET, measured 2026-08-14 03:02 UTC
 
-P3 and P4 are fully rolled out. `backfill-groups` ran (87 groups, 567
-memberships); both `groups-diff` commands report `differ=0,
-missing_remote=0`; the publisher converged (`checked=357, unchanged=357`) and
-its counter bug is fixed and live (`v0.5.3`); `GROUPS_FROM_TENANCY` is on in
-both apps and **both are demonstrably serving each other's groups**, which no
-local mirror can explain.
+`groups-diff` re-run in both apps *after* P5a shipped. The previous `differ=0`
+predated the read-path rewrite and no longer proved anything:
 
-`mirror-groups` was dry-run then run for real in both apps — additive only,
-**zero removals** — so both crons are proven before their first unattended
-run (06:15 / 06:30 UTC). Residual `groups-diff` `remote_extra` (5 fleet-lite,
-18 kaufmann) is fully explained: memberships for vehicles that app has not
-synced, which the composite FK structurally forbids mirroring. It disappears
-with the tables.
+| App | tenants | groups | agree | remote-extra | **differ** | **missing-remote** |
+|---|---|---|---|---|---|---|
+| fleet-lite | 5 | 87 | 82 | 5 | **0** | **0** |
+| kaufmann | 4 | 85 | 66 | 19 | **0** | **0** |
 
-### The one thing still unverified from P4
+`remote-extra` is the expected direction (tenancy holds the union of both
+sources) and disappears with the tables. The two failure verdicts are zero.
+The other half of the exit — "nothing but the mirror tooling reads the local
+tables" — is in code: kaufmann's `FleetGroupsView` records that every
+request-path reader of `vin_fleet_groups` now resolves through `GroupIndex`.
 
-**No group write has ever reached this service.** The tenancy pods have
-logged no `fleet group created/updated/deleted` since they started, the
-Kaufmann tenant still holds exactly the 85 groups the backfill produced, and
-the publisher has never reported `planned > 0`. A write was attempted from
-the UI and reported success — most likely the **SINCRONIZAR** button, which
-since P4 is a deliberate no-op that returns current groups and writes
-nothing, so it looks entirely successful.
+### The P4 write path is verified — this closes the last handoff's open item
 
-Five minutes to close: create a group, rename it, delete it, and watch
-`kubectl logs -n prod -l app.kubernetes.io/name=fleet-tenancy-api -c
-fleet-tenancy-api | grep "fleet group"`. That also gives the publisher its
-first real `planned → published` run, which the counter fix has not yet
-exercised.
+A real group write reached this service at **01:06:32 UTC**:
+`vehicles added to fleet group`, `group_id …_test-luis-saez`, `token_ids 1`.
+The publisher's repaired counters got their first genuine run on the next
+tick: `checked 357→358, planned 1, published 1, unchanged 357, failed 0`.
 
-### P5b is blocked on two things, not one
+The reason it had never happened is now removed: **SINCRONIZAR was a no-op
+that reported success**, summing `added + removed` from an endpoint that
+hardcodes both to 0. Any write test through it would have looked successful
+having written nothing. Button and endpoint are both gone (#116, #118) — the
+endpoint was on *P5b's* drop list, so that item is already done.
 
-The soak — and **`access_fleet_groups`**, which has an `ON DELETE CASCADE`
-foreign key to kaufmann's `fleet_groups`. P5a stops the *scope* path reading
-it, but `account.go` still reads and writes it for member management. That
-has to be retired before the table can be dropped.
+### What is left of P5 — P5b only, still correctly blocked
 
-### Bugs found while doing P5a — one worth acting on
+1. **`access_fleet_groups`** — `ON DELETE CASCADE` FK to kaufmann's
+   `fleet_groups`, so that table cannot be dropped while it exists.
+   `GetUserFleetAccess` is now called *only* from the member-management
+   surface (`account.go` `:345`, `:578–592`, `:686`, `:736`), which is exactly
+   where P5a was meant to leave it. **Retiring that surface is the next real
+   piece of work**, and it is not gated on time.
+2. **The soak** — reads flipped 2026-08-13 and P5a shipped tonight, so the
+   clock has barely started. The tables are the revert path until it elapses.
+3. **Then the drop**: `fleet_groups` / `vehicle_fleet_groups` /
+   `vin_fleet_groups`, the `mirror-groups` crons and commands, `groups-diff`,
+   the `GROUPS_FROM_TENANCY` flags and their local branches, fleet-lite's dead
+   `vehicles.groups_updated_at` / `last_group_sync_at`, and the stale
+   `GROUP_SYNC.md` / `FLEET_GROUPS_PLAN.md` (all still present). Plus the
+   deferred references from `scope_group_ids` / `source_group_id` — both are
+   **arrays**, so a trigger or check constraint, not a plain FK. Not started.
+
+### kaufmann's "merge is a release" hazard is fixed
+
+Both workflows used to write `charts/kaufmann-oracle/values.yaml`, which the
+prod ArgoCD app tracked at `HEAD` with automated sync — every merge to `main`
+was an unreviewed prod release, and the only way to stage a risky change was
+to not merge it. That is why #205 sat for a day.
+
+`values-prod.yaml` now exists (`cp` of `values.yaml`, so no transcription
+drift), `buildpushtagged` writes it, and the Argo app was patched to
+`valueFiles: ["values-prod.yaml"]`. **Verified against the live cluster**: a
+merge bumped `values.yaml` to `f09dd46`, Argo synced past that commit
+(`rev=c39e89f`), and prod stayed on `c145ecd` with the same pods. Releasing
+kaufmann now means cutting a `v*` tag, as in the other two repos.
+
+A CI gate (`values.yaml and values-prod.yaml agree`) diffs the two files with
+the `image.tag` line stripped, and fails if there is ever not exactly one such
+line rather than silently comparing less than it claims to.
+
+### Do these first
+
+1. **Read `mirror-groups`' output** (06:30 UTC kaufmann, 06:15 fleet-lite) —
+   not just its exit code. It is the first unattended run, and the first with
+   P5a live on *both* sides.
+2. **The first `v*` release of kaufmann through the new tagged path.** That
+   workflow now writes a file it has never written before. One line, and CI
+   lints the file, but it is unexercised — watch it rather than assume it,
+   exactly as the P4 write path taught.
+3. **Start retiring `access_fleet_groups`** if you want P5b to move; it is the
+   only part of the blocker that is not just waiting.
+
+### Known-open, none blocking
+
+- **`TenantService.UpdateMemberAccess` (fleet-lite) validates group ids not at
+  all**, so an owner can scope a member to nonexistent groups — asymmetric
+  with the invite path, which validates. Flagged across several sessions now
+  and still outside every phase's scope. Worth a ticket rather than another
+  mention.
+- The values-parity CI gate exists **only in kaufmann**. fleet-lite and b2b
+  have the same two-file structure and no check on it.
+- `groups-diff` has no cron in either app; it is manual, which is why its
+  result went stale across P5a. Consider scheduling it for the soak.
+
+### Bugs found while doing P5a — all fixed unless noted
 
 - **fleet-lite's geofence screens leaked tenant-wide vehicle counts to
-  limited members.** `GetGeofences` and `GetGeofence` left the unrestricted
+  limited members.** `GetGeofences` / `GetGeofence` left the unrestricted
   count in place when the per-geofence recount errored (`if err != nil {
   continue }`). Fixed in #115. Same family as everything else here: an error
   quietly degrading to "unrestricted".
+- **Group counts went stale after a write** because `invalidateGroupIndex` is
+  per-process and fleet-lite runs two replicas — a write served by one pod
+  left the other's index stale for up to the 60s TTL. It presented as "the
+  frontend needs to refresh"; the frontend was already refreshing. The
+  management reads now read through and repair the cache (#119).
+
+  **kaufmann does not have this bug**, checked rather than assumed: it has the
+  same per-process `indexCache` and also runs two replicas, but its management
+  reads (`ListGroups` / `GetGroup`) go through `listRemote`, which calls
+  tenancy directly and never consults the index. Its scope filter uses the
+  cache; its screens do not. If anyone later "optimises" `listRemote` onto
+  `GroupIndex`, that introduces fleet-lite's bug — the fix there is
+  `groupIndexFresh`, which reads through *and repairs* the entry rather than
+  bypassing it.
 - `AddVehicle` read "was this new?" *after* the remote write — right only
   because the mirror lagged. Fixed in #115.
 - `c.Status().JSON()` returns nil, so returning it as a helper's error yields
   a **200** carrying a 502 body unless the caller compensates. Fixed in #205;
   the same shape exists in P4's `groupWriteTenant`, which does compensate.
-- **Flagged, not fixed:** `TenantService.UpdateMemberAccess` (fleet-lite)
-  validates group ids not at all, so an owner can scope a member to
-  nonexistent groups — asymmetric with the invite path, which validates.
-  Worth a ticket.
 
 ### Reproducing the backfill
 
