@@ -1395,3 +1395,70 @@ kubectl logs -n prod <pod> -c fleet-lite-app-migrate   # kaufmann's is named 'mi
   protecting nothing — a byte-identical copy has been public in `fleet-lite-app`
   since that repo's `#96`, and `fleet-lite-app` is a public repo too. Scanned
   before committing: no keys, no credentials, no wallet addresses.
+
+## VEHICLE MEMBERSHIPS — steps 1–5 SHIPPED AND DEPLOYED, 2026-08-14
+
+A new programme, planned and half-built in one session. The plan, the state and
+the next steps live in
+[`plans/02-vehicle-memberships.md`](plans/02-vehicle-memberships.md) — **start
+there**, not here. This section exists so nobody rediscovers the feature by
+finding an unfamiliar table.
+
+**What it is.** Customers buy a **membership per vehicle**: a term of 1, 12, 24,
+36 or 48 months, movable to another vehicle when one is discontinued. Operators
+create and manage them from the b2b console; there is no purchase flow yet. When
+an operator turns enforcement on for a customer, fleet-lite stops returning that
+customer's vehicles that have no active membership.
+
+**It is deliberately not part of `vehicle_entitlements`.** The entitlement
+answers *may this customer see this vehicle*; the membership answers *is it paid
+for, and until when*. Folding them together would make moving a membership a
+revoke-and-regrant, discarding the entitlement's provenance as a side effect of
+a commercial action — and it is what lets an entitlement be revoked without
+destroying paid time, which is exactly the discontinued-vehicle case.
+
+| Repo | PR | Released |
+|---|---|---|
+| this | #37 — schema, `MembershipService`, `/v1/tenants/{id}/vehicle-memberships` | `v0.6.0`, image `c4000ee` |
+| kaufmann | #208 — five proxy routes | `v1.49.0` |
+| b2b | #179 console UI, #180 BFF routes | `v1.9.0` |
+| fleet-lite | #121 — read-only Memberships page in Account | `v0.9.0` |
+
+Deployed in the load-bearing order, each verified before the next was tagged.
+Migration `20260813160000` applied cleanly; all four services rolled with zero
+restarts and no errors of their own.
+
+**NOTHING IS ENFORCED.** `tenants.memberships_enforced` is `false` for every
+tenant in production and fleet-lite does not read memberships at all yet, so no
+customer's fleet has changed. That is the intended intermediate state.
+
+### Things about it worth knowing before touching anything
+
+- **Status is computed in SQL on every read**, never stored and maintained by no
+  job. An expiry that depends on something having run is an expiry that silently
+  does not happen the day that thing breaks.
+- **The partial unique index is on `canceled_at IS NULL`, not "unexpired"** —
+  `NOW()` is not immutable so an expiry test cannot appear in an index predicate
+  at all. The service refuses the unexpired case; the index is only the
+  read-then-write race backstop, the same split as
+  `idx_vehicle_entitlements_one_active_holder`.
+- **The insert's `::int` and `::timestamptz` casts are load-bearing.** Each of
+  `$3` and `$4` appears in two type contexts, and without the casts Postgres
+  rejects the statement at *runtime* with "inconsistent types deduced for
+  parameter". It compiles fine either way.
+- **`MembershipService.ActiveTokenIDs` has no HTTP route yet** and is reached
+  only by its tests. Step 6 decides whether fleet-lite filters the list endpoint
+  or gets a dedicated one.
+- kaufmann's membership controller has its **own `fail()`** passing 404 and 422
+  through as well as 409/400; the customer controller's narrower set was
+  deliberately left alone rather than widened underneath existing endpoints.
+
+### P5a went out with it
+
+**kaufmann `v1.49.0` also carried P5a (#205)**, because a tag ships all of main.
+Raised and taken deliberately rather than discovered. It rolled clean — zero
+restarts, and the only errors in the following twelve minutes were the
+pre-existing ruptela unknown-IMEI ingest failures. fleet-lite's half had been
+live since `v0.8.0` the same day, so **P5a is now fully deployed on both sides
+and its soak is running in production rather than pending.** The P5b blockers
+recorded above are unchanged.

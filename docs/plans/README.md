@@ -13,7 +13,7 @@ finished.
 | Plan | Status |
 |---|---|
 | [01-groups-into-tenancy.md](01-groups-into-tenancy.md) | Agreed, not started |
-| [02-vehicle-memberships.md](02-vehicle-memberships.md) | Agreed, not started |
+| [02-vehicle-memberships.md](02-vehicle-memberships.md) | Steps 1–5 shipped 2026-08-14; step 6 next |
 
 ## Writing one
 
