@@ -1,6 +1,14 @@
 # Vehicle memberships — a per-vehicle, term-based product
 
-Status: **agreed, not started**. Written 2026-08-13.
+Status: **steps 1–5 shipped and deployed 2026-08-14. Step 6 (fleet-lite's read
+filter) and step 7 (turning enforcement on) remain.** Written 2026-08-13.
+
+**Everything deployed so far is inert.** `memberships_enforced` is `false` for
+every tenant in production, so no customer's fleet has changed. An operator can
+record memberships in the console and nothing acts on them yet — which is the
+intended intermediate state, not a half-finished one.
+
+Jump to [PICK UP HERE](#pick-up-here--step-6) for the next session.
 
 ## What this is
 
@@ -292,7 +300,110 @@ Per customer, from the console: assign memberships, verify the list, flip the
 toggle, confirm in fleet-lite that exactly the membered vehicles remain. First
 tenant should be a test tenant (TEST / My Test Fleet pattern), not Kaufmann.
 
+## What shipped — 2026-08-14
+
+All five PRs merged and deployed in the load-bearing order, each verified in the
+cluster before the next was tagged.
+
+| Step | PR | Released | Verified |
+|---|---|---|---|
+| 3 — schema, service, `/v1` | this repo **#37** | `v0.6.0`, image `c4000ee` | migration `20260813160000` applied, `/health` up, `/version` = `c4000ee`, zero errors |
+| 4 — kaufmann proxies | kaufmann **#208** | `v1.49.0` | 2 pods 3/3, zero restarts, no errors |
+| 5 — b2b BFF routes | b2b **#180** | `v1.9.0` | 2 pods 2/2, zero restarts |
+| 1 — console UI | b2b **#179** | `v1.9.0` (same tag) | rolled with #180 |
+| 2 — fleet-lite page | fleet-lite **#121** | `v0.9.0` | 2 pods 2/2, zero restarts |
+
+**kaufmann's `v1.49.0` also carried P5a (#205)**, the scope-filtering rewrite,
+because a tag ships all of main and there was no way to separate them. This was
+raised and taken deliberately rather than discovered. It rolled clean: zero
+restarts, and the only error lines in the twelve minutes after were the
+pre-existing ruptela unknown-IMEI ingest failures, which are unrelated and
+already recorded as benign. fleet-lite's half of P5a had been live since
+`v0.8.0` earlier the same day. **P5a is therefore fully deployed on both sides,
+and its soak is now running in production rather than pending.**
+
+## PICK UP HERE — step 6
+
+Everything below is what the next session starts on.
+
+### The state to trust
+
+- Console memberships are **live in prod** end to end: b2b → kaufmann →
+  tenancy. An operator can create, move, renew and cancel a membership against
+  a real customer, and the Settings tab can toggle enforcement.
+- **Nothing consumes it yet.** `memberships_enforced` is false everywhere, and
+  fleet-lite does not read memberships at all — its page shows "Memberships
+  aren't switched on yet", which is the `GET /memberships` 404 rendering as
+  designed.
+- The stub and mock flags still work and are still worth using:
+  `localStorage.tenancyStub` in b2b, `localStorage.membershipsMock` in
+  fleet-lite.
+
+### The first thing worth doing
+
+**Exercise the console against a real customer before writing step 6.** That is
+the whole reason the UI shipped first, and it has not actually been done yet —
+every flow so far has been driven against fixtures. Create a membership on a
+test tenant, move it, renew it, cancel it, and watch this service's logs:
+
+```sh
+kubectl --context arn:aws:eks:us-east-2:135418775146:cluster/dimo \
+  logs -n prod -l app.kubernetes.io/name=fleet-tenancy-api \
+  -c fleet-tenancy-api -f | grep membership
+```
+
+Expect `membership created` / `moved` / `renewed` / `canceled`. If a flow feels
+wrong, changing it now is a migration cheaper than changing it after step 6.
+
+### `ActiveTokenIDs` has no HTTP route
+
+`MembershipService.ActiveTokenIDs` was written as the read fleet-lite would
+gate on, but **no route exposes it** — it is currently reached only by its
+tests. Step 6 has to decide one of:
+
+- fleet-lite calls `GET /v1/tenants/{id}/vehicle-memberships` and filters on
+  `status != "expired"` client-side. No new endpoint, but it ships the whole
+  list on a hot path.
+- Add a route for `ActiveTokenIDs` (e.g. `GET
+  /v1/tenants/{id}/active-vehicle-memberships`) returning `{enforced,
+  tokenIds[]}`. Smaller payload, one more endpoint, and it is additive so it
+  costs no migration.
+
+The second is probably right for a per-request read, but it is a real choice
+and neither option is blocked.
+
+### What step 6 actually has to do
+
+Detailed in [step 6](#6-fleet-lite-app-the-read-filter-and-the-page-goes-live)
+above. The traps, restated because they are the whole risk:
+
+- **Filter unconditionally, for every member including owners.** Group scope is
+  per-member; membership enforcement is per-tenant. Applying it only to limited
+  members is the asymmetry that would pass every owner-account test.
+- **Fail closed but flagged.** If the membership read errors while enforcement
+  was last known on, serve the cached set — never the full fleet. Degrading to
+  "show everything" on error is exactly the geofence-count leak fixed in #115.
+- **Invalidate `FleetCache`.** It persists the vehicle list to IndexedDB for
+  24h. A stale cache showing hidden vehicles for a day undermines the feature
+  entirely.
+- **404, don't 403**, for a hidden vehicle — `GetVehicle`'s existing convention
+  makes hidden indistinguishable from absent.
+
+P5a has now landed on both sides, so `AccessibleTokenIDs` and
+`allowedGroupsFilter` are in their final shape and the membership filter should
+compose with them rather than around them.
+
+### Then step 7
+
+Per customer, from the console, starting with a test tenant and never Kaufmann
+first: assign memberships, verify the list, flip the toggle, confirm in
+fleet-lite that exactly the membered vehicles remain. The revert is flipping
+that customer's toggle back.
+
 ## Sequencing note against current work
+
+*(Resolved: P5a merged and deployed on both sides on 2026-08-14, so the
+conflict this section warned about no longer applies. Kept for the reasoning.)*
 
 Step 6 lands in the same files as the open **P5a** PRs (fleet-lite #115
 rewrites `AccessibleTokenIDs` / `allowedGroupsFilter`). Do not develop the
