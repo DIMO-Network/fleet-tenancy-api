@@ -54,6 +54,7 @@ func main() {
 		subcommands.Register(&backfillCmd{logger: logger, settings: settings}, "database")
 		subcommands.Register(&backfillGroupsCmd{logger: logger, settings: settings}, "database")
 		subcommands.Register(&publishGroupAttestationsCmd{logger: logger, settings: settings}, "attestations")
+		subcommands.Register(&pushPostmarkTemplatesCmd{logger: logger, settings: settings}, "email")
 		flag.Parse()
 		os.Exit(int(subcommands.Execute(ctx)))
 	}

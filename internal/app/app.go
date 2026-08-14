@@ -66,6 +66,10 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint))
 	provisionSvc := service.NewProvisionService(logger, pdb, memberSvc, credSvc,
 		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint))
+	// The one email this service sends: "you've been given access", on
+	// provisioning. Unconfigured (no Postmark token) it is a no-op and every
+	// provision reports emailSent=false.
+	provisionSvc.UseAccessEmail(service.NewAccessEmailService(logger, settings))
 	provisionCtrl := controllers.NewProvisionController(logger, provisionSvc, credSvc, tenantSvc, CallerFrom)
 	groupsCtrl := controllers.NewGroupsController(logger, service.NewGroupService(logger, pdb), tenantSvc, CallerFrom)
 

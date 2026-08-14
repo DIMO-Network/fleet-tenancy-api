@@ -26,6 +26,13 @@ env:
   DB_SSL_MODE: require
   JWT_KEY_SET_URL: https://auth.dimo.zone/keys
   ATTEST_API_URL: http://dis-prod-attest.prod.svc.cluster.local:8080
+  # Access-granted email on provisioning. The Postmark token arrives via the
+  # ExternalSecret; whitespace there means the feature is off and provisions
+  # report emailSent=false. The template alias must exist in Postmark — see
+  # templates/postmark/ and `fleet-tenancy-api push-postmark-templates`.
+  PROVISION_EMAIL_FROM: no-reply@dimo.co
+  POSTMARK_PROVISION_TEMPLATE_ALIAS: fleet-access-granted
+  FLEET_APP_BASE_URL: https://fleets.dimo.co
   CHAIN_ID: '137'
 service:
   type: ClusterIP

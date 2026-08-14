@@ -62,6 +62,23 @@ type Settings struct {
 	// rotated or revoked without a coordinated redeploy of the others, and so a
 	// rejected request names who was rejected.
 	TrustedCallerKeys string `yaml:"TRUSTED_CALLER_KEYS"`
+
+	// Access-granted notification (Postmark transactional email), sent when a
+	// member is provisioned into a tenant. The whole feature is optional: an
+	// empty server token means no email is sent and provisioning reports
+	// emailSent=false — deliberately NOT boot-required, so the service runs in
+	// environments where the Postmark side has not been set up.
+	//
+	// PostmarkServerToken authenticates against the Postmark API (server-scoped).
+	// ProvisionEmailFrom must be a verified Postmark sender signature/domain.
+	// ProvisionTemplateAlias must exist in that Postmark server — see
+	// templates/postmark/ and the push-postmark-templates command.
+	// FleetAppBaseURL is the customer app's public origin, used for the
+	// sign-in link in the email.
+	PostmarkServerToken    string  `yaml:"POSTMARK_SERVER_TOKEN"` // secret
+	ProvisionEmailFrom     string  `yaml:"PROVISION_EMAIL_FROM"`
+	ProvisionTemplateAlias string  `yaml:"POSTMARK_PROVISION_TEMPLATE_ALIAS"`
+	FleetAppBaseURL        url.URL `yaml:"FLEET_APP_BASE_URL"`
 }
 
 // IsLocal is "local" exactly. Anything else — including an unset ENVIRONMENT or
