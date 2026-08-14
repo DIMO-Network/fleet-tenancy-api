@@ -8,7 +8,9 @@ every tenant in production, so no customer's fleet has changed. An operator can
 record memberships in the console and nothing acts on them yet — which is the
 intended intermediate state, not a half-finished one.
 
-Jump to [PICK UP HERE](#pick-up-here--step-6) for the next session.
+Jump to [PICK UP HERE](#pick-up-here--step-6) for the next session — step 6 is
+planned there in detail, against the post-P5a code, with the one open decision
+called out first.
 
 ## What this is
 
@@ -355,43 +357,126 @@ kubectl --context arn:aws:eks:us-east-2:135418775146:cluster/dimo \
 Expect `membership created` / `moved` / `renewed` / `canceled`. If a flow feels
 wrong, changing it now is a migration cheaper than changing it after step 6.
 
-### `ActiveTokenIDs` has no HTTP route
+### THE ONE DECISION TO MAKE FIRST — how fleet-lite reads this
 
-`MembershipService.ActiveTokenIDs` was written as the read fleet-lite would
-gate on, but **no route exposes it** — it is currently reached only by its
-tests. Step 6 has to decide one of:
+`MembershipService.ActiveTokenIDs` was written as the read fleet-lite would gate
+on, but **no route exposes it**; it is reached only by its tests. Pick one before
+writing any fleet-lite code:
 
-- fleet-lite calls `GET /v1/tenants/{id}/vehicle-memberships` and filters on
-  `status != "expired"` client-side. No new endpoint, but it ships the whole
-  list on a hot path.
-- Add a route for `ActiveTokenIDs` (e.g. `GET
-  /v1/tenants/{id}/active-vehicle-memberships`) returning `{enforced,
-  tokenIds[]}`. Smaller payload, one more endpoint, and it is additive so it
-  costs no migration.
+| | |
+|---|---|
+| **A. Reuse `GET /v1/tenants/{id}/vehicle-memberships`** | No new endpoint. But it ships every membership row — id, term, dates, status — on a per-request hot path, to compute one set of ints. |
+| **B. Add `GET /v1/tenants/{id}/active-vehicle-memberships`** (recommended) | Returns `{"enforced": bool, "tokenIds": [int64]}`, backed by the existing `ActiveTokenIDs`. Small payload, one thin controller, additive so it costs no migration — and it makes `ActiveTokenIDs` reachable instead of dead. |
 
-The second is probably right for a per-request read, but it is a real choice
-and neither option is blocked.
+**Recommendation: B.** The console and the customer app want different things
+from the same data — the console wants rows to render, the read path wants a set
+to intersect — and serving both from one shape means the hot path pays for the
+cold one. It is roughly thirty lines in `internal/controllers/memberships.go`
+plus a route, and it ships in the same release as the fleet-lite change because
+fleet-lite is its only caller.
 
-### What step 6 actually has to do
+Whichever is chosen, the answer must carry **`enforced` and the ids together in
+one response**. Two calls can straddle a toggle, and the failure mode of that is
+a fleet that briefly renders empty.
 
-Detailed in [step 6](#6-fleet-lite-app-the-read-filter-and-the-page-goes-live)
-above. The traps, restated because they are the whole risk:
+### The fleet-lite change, against the post-P5a code
 
-- **Filter unconditionally, for every member including owners.** Group scope is
-  per-member; membership enforcement is per-tenant. Applying it only to limited
-  members is the asymmetry that would pass every owner-account test.
-- **Fail closed but flagged.** If the membership read errors while enforcement
-  was last known on, serve the cached set — never the full fleet. Degrading to
-  "show everything" on error is exactly the geofence-count leak fixed in #115.
-- **Invalidate `FleetCache`.** It persists the vehicle list to IndexedDB for
-  24h. A stale cache showing hidden vehicles for a day undermines the feature
-  entirely.
-- **404, don't 403**, for a hidden vehicle — `GetVehicle`'s existing convention
-  makes hidden indistinguishable from absent.
+P5a landed, so these are the shapes to build on, not the ones the earlier
+sections describe.
 
-P5a has now landed on both sides, so `AccessibleTokenIDs` and
-`allowedGroupsFilter` are in their final shape and the membership filter should
-compose with them rather than around them.
+**Where the filter goes — and why not in `scopeFilter`.** `scopeFilter`
+(`api/internal/service/vehicle.go`) is only called when `allowedGroupIDs != nil`,
+i.e. for limited members. Membership enforcement is **per tenant** and must
+apply to owners too, so folding it in there would silently exempt every
+unrestricted member — an owner-account test would pass and the feature would be
+half-off in production. It has to be a separate mod appended unconditionally.
+
+Sketch, mirroring the `groupIndexSource` pattern P5a already established:
+
+```go
+// membershipSource is wired by UseMemberships, like UseGroupIndex. nil (the
+// sync-only construction in cmd/) means no membership filtering at all.
+func (s *VehicleService) membershipFilter(ctx context.Context, tenant models.Tenant) (qm.QueryMod, error) {
+    if s.memberships == nil {
+        return nil, nil
+    }
+    enforced, tokenIDs, err := s.memberships.activeTokens(ctx, tenant)
+    if err != nil {
+        return nil, err            // never degrade to "no filter"
+    }
+    if !enforced {
+        return nil, nil
+    }
+    return qm.Where("token_id = ANY(?)", pq.Array(tokenIDs)), nil
+}
+```
+
+**The empty set must match zero vehicles.** `= ANY('{}')` is false for every
+row, which is the correct answer for a tenant with enforcement on and no active
+memberships. Do **not** write `if len(tokenIDs) > 0 { apply }` — that hands the
+whole fleet to exactly the tenant who has paid for none of it. This is the same
+inversion `allowedTokensFilter` documents at length just above; read that comment
+before writing this one.
+
+Call sites to change, all in `api/internal/service/vehicle.go`:
+
+- `ListVehicles` — append the membership mod **before** the `allowedGroupIDs != nil`
+  block, unconditionally.
+- `GetVehicle` — same. An unmembered vehicle then misses and returns the same
+  error a nonexistent one does, which is the existing 404-not-403 convention and
+  is what we want.
+- `AccessibleTokenIDs` — intersect the returned map with the active set when
+  enforced. Geofences read this (`geofence.go`'s `EffectiveTokenIDs`), so
+  skipping it would leave geofence screens counting vehicles the fleet no longer
+  shows.
+
+**Fail closed, and mirror `ErrGroupScopeUnavailable`.** P5a already established
+that a tenancy failure propagates rather than degrading into an unfiltered
+query. The membership read needs the identical treatment — a new
+`ErrMembershipScopeUnavailable`, or reuse of the same error — because
+"tenancy is down so show everything" is the precise shape of the geofence count
+leak that #115 fixed.
+
+**Cache the read.** Per-request HTTP to tenancy on the vehicle list is not
+acceptable. Cache per tenant for ~60s, the same window authz already uses and
+advertises, and never cache failures.
+
+**`GET /me/access`** (`internal/controllers/tenants.go`) should gain
+`membershipsEnforced`, so the frontend can explain an empty garage rather than
+looking broken.
+
+**Invalidate `FleetCache`.** `web/src/services/fleet-cache.ts` persists the
+vehicle list to IndexedDB for 24 hours. When the served set shrinks, a stale
+cache shows hidden vehicles for a day and undermines the whole feature. Cheapest
+correct fix: key the cache on the returned token-id set, or clear it when
+`/me/access` reports a change in `membershipsEnforced`.
+
+**Replace the mock.** `web/src/services/membership-service.ts` currently 404s
+into `available: false` and serves fixtures behind `localStorage.membershipsMock`.
+Point it at the real endpoint; keep the 404 branch, which stays correct for an
+environment running an older tenancy service.
+
+### Suggested order
+
+1. Decide A or B above. If B, ship the tenancy endpoint first — the usual rule,
+   and it is a one-release dependency for fleet-lite.
+2. fleet-lite backend: source + `membershipFilter` + the three call sites +
+   `/me/access`, with tests.
+3. fleet-lite frontend: real read, `FleetCache` invalidation.
+4. Deploy with every tenant still unenforced — this changes nothing until a
+   toggle flips, which is what makes it safe to ship and observe.
+
+### Tests worth writing before it is called done
+
+- Enforcement **off** → every vehicle returned, membership state irrelevant.
+- Enforcement **on**, some vehicles unmembered → exactly the membered set, for
+  an **owner** as well as a limited member. This is the asymmetry that would
+  otherwise reach production.
+- Enforcement **on**, zero active memberships → **empty**, not everything.
+- An expired membership → its vehicle disappears with no job having run.
+- Tenancy unreachable while last known enforced → error or cached set, never
+  the full fleet.
+- `GetVehicle` on an unmembered vehicle → same error as a nonexistent one.
 
 ### Then step 7
 
