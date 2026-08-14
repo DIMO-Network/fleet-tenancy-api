@@ -46,6 +46,39 @@ func (c *MembershipsController) ListMemberships(ctx *fiber.Ctx) error {
 	return ctx.JSON(out)
 }
 
+// ActiveMemberships — GET /v1/tenants/:tenantId/active-vehicle-memberships
+//
+// The read fleet-lite gates its vehicle list on: the enforcement flag and the
+// active token ids, in one response. Deliberately not ListMemberships — that
+// ships every row (terms, dates, status) for the console to render, and this
+// sits on a per-request hot path that needs only a set of ints to intersect.
+//
+// `enforced` and `tokenIds` travel together because two calls can straddle a
+// toggle, and the failure mode of that is a fleet that briefly renders empty.
+func (c *MembershipsController) ActiveMemberships(ctx *fiber.Ctx) error {
+	tenantID := ctx.Params("tenantId")
+	if err := c.assertScope(ctx, tenantID, "read active memberships"); err != nil {
+		return err
+	}
+	enforced, tokenIDs, err := c.memberships.ActiveTokenIDs(ctx.Context(), tenantID)
+	if err != nil {
+		if errors.Is(err, service.ErrTenantNotFound) {
+			return fiber.NewError(fiber.StatusForbidden, "unknown tenant")
+		}
+		c.logger.Err(err).Str("tenant_id", tenantID).Msg("read active memberships")
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to read active memberships")
+	}
+	// tokenIds is always a JSON array, never null. The caller's empty-set
+	// handling ("enforced with no memberships matches zero vehicles") depends
+	// on [] being distinguishable from an absent value, so the envelope
+	// enforces it here rather than trusting the service to keep returning
+	// []int64{} through future refactors.
+	if tokenIDs == nil {
+		tokenIDs = []int64{}
+	}
+	return ctx.JSON(fiber.Map{"enforced": enforced, "tokenIds": tokenIDs})
+}
+
 // CreateMembership — POST /v1/tenants/:tenantId/vehicle-memberships
 func (c *MembershipsController) CreateMembership(ctx *fiber.Ctx) error {
 	tenantID := ctx.Params("tenantId")
