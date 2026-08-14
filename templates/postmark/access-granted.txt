@@ -1,0 +1,9 @@
+You now have access to {{tenant_name}}
+
+Your fleet operator has given this email address access to the {{tenant_name}}
+fleet on DIMO. There is nothing to accept — sign in with this email and you'll
+land in your fleet:
+
+{{login_url}}
+
+If you weren't expecting this, contact your fleet operator or ignore this email.

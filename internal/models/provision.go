@@ -39,4 +39,9 @@ type ProvisionRequest struct {
 type ProvisionResponse struct {
 	Created bool   `json:"created"`
 	Member  Member `json:"member"`
+	// EmailSent reports whether the access-granted notification actually went
+	// out. False when email is unconfigured or the send failed — the console
+	// uses it to tell the operator to notify the person themselves, because a
+	// silent grant is one nobody acts on.
+	EmailSent bool `json:"emailSent"`
 }

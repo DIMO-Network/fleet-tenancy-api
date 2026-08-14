@@ -40,12 +40,27 @@ type ProvisionService struct {
 	members  *MemberService
 	creds    credentialProvider
 	accounts gateway.AccountsAPI
+
+	// email notifies the person they were given access. nil or unconfigured
+	// means provisions succeed silently, exactly as before the feature — the
+	// grant is the authoritative act, the email is a courtesy on top of it.
+	email accessNotifier
+}
+
+// accessNotifier is the slice of AccessEmailService provisioning needs.
+type accessNotifier interface {
+	Enabled() bool
+	SendAccessGranted(ctx context.Context, toEmail, tenantName string) error
 }
 
 func NewProvisionService(logger *zerolog.Logger, pdb *db.Store, members *MemberService,
 	creds credentialProvider, accounts gateway.AccountsAPI) *ProvisionService {
 	return &ProvisionService{logger: logger, pdb: pdb, members: members, creds: creds, accounts: accounts}
 }
+
+// UseAccessEmail wires the access-granted notification. Without it every
+// provision succeeds with EmailSent false.
+func (s *ProvisionService) UseAccessEmail(n accessNotifier) { s.email = n }
 
 // Provision resolves the email to a wallet via accounts-api — creating the
 // account when none exists — and writes the membership.
@@ -151,5 +166,48 @@ func (s *ProvisionService) Provision(ctx context.Context, tenantID string, in *m
 			Permissions: in.Permissions,
 		}
 	}
-	return &models.ProvisionResponse{Created: created, Member: *member}, nil
+	return &models.ProvisionResponse{
+		Created:   created,
+		Member:    *member,
+		EmailSent: s.notifyAccessGranted(ctx, tenantID, in.Email),
+	}, nil
+}
+
+// notifyAccessGranted emails the provisioned person, best-effort, and reports
+// whether the email actually went out.
+//
+// Best-effort is a decision, not a shrug: the membership is already written
+// and visible in the console, so failing the request here would report a grant
+// that happened as one that did not — the same confusion the read-back above
+// refuses to create. What must NOT happen is the failure being silent; it is
+// logged at error level and carried in the response as EmailSent=false, so the
+// console can tell the operator to notify the person themselves. (The
+// SINCRONIZAR button taught this programme what a success that did nothing
+// costs.)
+//
+// Sent on found accounts as well as created ones: being added to a tenant is
+// news either way, and the email says "you have access", not "welcome to your
+// new account". A retried provision re-sends — idempotent for access, mildly
+// noisy in the inbox, and preferable to a created-only rule that skips the
+// commoner case.
+func (s *ProvisionService) notifyAccessGranted(ctx context.Context, tenantID, toEmail string) bool {
+	if s.email == nil || !s.email.Enabled() {
+		return false
+	}
+	tenantName := ""
+	if err := s.pdb.DBS().Reader.QueryRowContext(ctx,
+		`SELECT name FROM tenants WHERE id = $1`, tenantID).Scan(&tenantName); err != nil {
+		// The name is decoration on the email; the notification matters more.
+		s.logger.Warn().Err(err).Str("tenant_id", tenantID).
+			Msg("access email: could not load tenant name")
+		tenantName = "your fleet"
+	}
+	if err := s.email.SendAccessGranted(ctx, toEmail, tenantName); err != nil {
+		s.logger.Error().Err(err).Str("tenant_id", tenantID).Str("to", toEmail).
+			Msg("member provisioned but the access email did not send — the operator must notify them")
+		return false
+	}
+	s.logger.Info().Str("tenant_id", tenantID).Str("to", toEmail).
+		Msg("access-granted email sent")
+	return true
 }

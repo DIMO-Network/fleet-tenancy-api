@@ -1,0 +1,11 @@
+{
+  "templates": [
+    {
+      "alias": "fleet-access-granted",
+      "name": "Fleet Tenancy — Access Granted",
+      "subject": "You now have access to {{tenant_name}} on DIMO Fleet",
+      "htmlFile": "access-granted.html",
+      "textFile": "access-granted.txt"
+    }
+  ]
+}
