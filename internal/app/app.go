@@ -150,6 +150,10 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// differently, and a tri-state update body is the shape that has bitten
 	// this service before.
 	v1.Get("/tenants/:tenantId/vehicle-memberships", membershipsCtrl.ListMemberships)
+	// The gate read, separate from the list above: fleet-lite intersects its
+	// vehicle queries with this on every request, and needs only the flag and
+	// a set of ints — not every row the console renders.
+	v1.Get("/tenants/:tenantId/active-vehicle-memberships", membershipsCtrl.ActiveMemberships)
 	v1.Post("/tenants/:tenantId/vehicle-memberships", membershipsCtrl.CreateMembership)
 	v1.Post("/tenants/:tenantId/vehicle-memberships/:membershipId/move", membershipsCtrl.MoveMembership)
 	v1.Post("/tenants/:tenantId/vehicle-memberships/:membershipId/renew", membershipsCtrl.RenewMembership)
