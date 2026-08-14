@@ -34,8 +34,12 @@ type Tenant struct {
 	Managed          bool    `json:"managed"`
 	EntitlementMode  string  `json:"entitlementMode"`
 	FleetLiteEnabled bool    `json:"fleetLiteEnabled"`
-	ExternalRef      *string `json:"externalRef"`
-	CreatedAt        string  `json:"createdAt"`
+	// MembershipsEnforced hides this tenant's vehicles that have no active
+	// membership from fleet-lite. Off unless an operator deliberately turns it
+	// on — see the migration for why the default is load-bearing.
+	MembershipsEnforced bool    `json:"membershipsEnforced"`
+	ExternalRef         *string `json:"externalRef"`
+	CreatedAt           string  `json:"createdAt"`
 
 	// Counts, populated on the children listing that backs the console list.
 	// Derived per request rather than stored: a denormalised counter drifts
@@ -61,10 +65,11 @@ type CreateTenantInput struct {
 // with plain types, "" and false are indistinguishable from absent, and
 // PATCHing a name would silently clear the external ref.
 type UpdateTenantInput struct {
-	Name             *string `json:"name,omitempty"`
-	Status           *string `json:"status,omitempty"`
-	FleetLiteEnabled *bool   `json:"fleetLiteEnabled,omitempty"`
-	ExternalRef      *string `json:"externalRef,omitempty"`
+	Name                *string `json:"name,omitempty"`
+	Status              *string `json:"status,omitempty"`
+	FleetLiteEnabled    *bool   `json:"fleetLiteEnabled,omitempty"`
+	MembershipsEnforced *bool   `json:"membershipsEnforced,omitempty"`
+	ExternalRef         *string `json:"externalRef,omitempty"`
 }
 
 // Member is the wire shape of one membership.

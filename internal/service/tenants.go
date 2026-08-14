@@ -35,8 +35,8 @@ var (
 func (s *TenantService) ListChildren(ctx context.Context, operatorID string) ([]models.Tenant, error) {
 	rows, err := s.pdb.DBS().Reader.QueryContext(ctx,
 		`SELECT t.id, t.name, t.kind, t.parent_tenant_id, t.status, t.managed,
-		        t.entitlement_mode, t.fleet_lite_enabled, t.external_ref,
-		        t.created_at,
+		        t.entitlement_mode, t.fleet_lite_enabled, t.memberships_enforced,
+		        t.external_ref, t.created_at,
 		        (SELECT count(*) FROM vehicle_entitlements e
 		          WHERE e.tenant_id = t.id AND e.revoked_at IS NULL),
 		        (SELECT count(*) FROM memberships m WHERE m.tenant_id = t.id),
@@ -67,8 +67,8 @@ func (s *TenantService) ListChildren(ctx context.Context, operatorID string) ([]
 func (s *TenantService) Get(ctx context.Context, tenantID string) (*models.Tenant, error) {
 	row := s.pdb.DBS().Reader.QueryRowContext(ctx,
 		`SELECT t.id, t.name, t.kind, t.parent_tenant_id, t.status, t.managed,
-		        t.entitlement_mode, t.fleet_lite_enabled, t.external_ref,
-		        t.created_at,
+		        t.entitlement_mode, t.fleet_lite_enabled, t.memberships_enforced,
+		        t.external_ref, t.created_at,
 		        (SELECT count(*) FROM vehicle_entitlements e
 		          WHERE e.tenant_id = t.id AND e.revoked_at IS NULL),
 		        (SELECT count(*) FROM memberships m WHERE m.tenant_id = t.id),
@@ -177,6 +177,9 @@ func (s *TenantService) Update(ctx context.Context, tenantID string, in *models.
 	if in.FleetLiteEnabled != nil {
 		add("fleet_lite_enabled", *in.FleetLiteEnabled)
 	}
+	if in.MembershipsEnforced != nil {
+		add("memberships_enforced", *in.MembershipsEnforced)
+	}
 	if in.ExternalRef != nil {
 		// Distinct from absent: an explicit "" clears it.
 		add("external_ref", nullableString(in.ExternalRef))
@@ -281,7 +284,8 @@ func scanTenantWithCounts(r rowScanner) (*models.Tenant, error) {
 		lastActivity sql.NullTime
 	)
 	if err := r.Scan(&t.ID, &t.Name, &t.Kind, &parent, &t.Status, &t.Managed,
-		&t.EntitlementMode, &t.FleetLiteEnabled, &externalRef, &createdAt,
+		&t.EntitlementMode, &t.FleetLiteEnabled, &t.MembershipsEnforced,
+		&externalRef, &createdAt,
 		&t.VehicleCount, &t.UserCount, &lastActivity); err != nil {
 		return nil, err
 	}

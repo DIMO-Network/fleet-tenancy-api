@@ -56,6 +56,8 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	tenantsCtrl := controllers.NewTenantsController(logger, tenantSvc, CallerFrom)
 	entitlementsCtrl := controllers.NewEntitlementsController(logger,
 		service.NewEntitlementService(logger, pdb), tenantSvc, CallerFrom)
+	membershipsCtrl := controllers.NewMembershipsController(logger,
+		service.NewMembershipService(logger, pdb), tenantSvc, CallerFrom)
 
 	// The effective-credential surface: the token minter and on-behalf
 	// provisioning. The credential service is the only code that decrypts a
@@ -137,6 +139,21 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	v1.Get("/tenants/:tenantId/vehicles", entitlementsCtrl.ListVehicles)
 	v1.Post("/tenants/:tenantId/vehicles", entitlementsCtrl.AssignVehicles)
 	v1.Delete("/tenants/:tenantId/vehicles/:tokenId", entitlementsCtrl.RevokeVehicle)
+
+	// Vehicle memberships — the commercial record, one per vehicle
+	// (docs/plans/02-vehicle-memberships.md). Distinct from the entitlements
+	// above: those decide whether a customer may SEE a vehicle, these decide
+	// whether it is PAID FOR. Named vehicle-memberships on the wire because
+	// "memberships" already means users-in-tenants throughout this service.
+	//
+	// Move and renew are actions rather than a PATCH: they validate
+	// differently, and a tri-state update body is the shape that has bitten
+	// this service before.
+	v1.Get("/tenants/:tenantId/vehicle-memberships", membershipsCtrl.ListMemberships)
+	v1.Post("/tenants/:tenantId/vehicle-memberships", membershipsCtrl.CreateMembership)
+	v1.Post("/tenants/:tenantId/vehicle-memberships/:membershipId/move", membershipsCtrl.MoveMembership)
+	v1.Post("/tenants/:tenantId/vehicle-memberships/:membershipId/renew", membershipsCtrl.RenewMembership)
+	v1.Delete("/tenants/:tenantId/vehicle-memberships/:membershipId", membershipsCtrl.CancelMembership)
 
 	// Fleet groups — P1 of the groups move (docs/plans/01-groups-into-tenancy.md):
 	// endpoints served, no caller yet. Both apps still own their local copies;

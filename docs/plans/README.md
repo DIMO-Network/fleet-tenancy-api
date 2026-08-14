@@ -13,6 +13,7 @@ finished.
 | Plan | Status |
 |---|---|
 | [01-groups-into-tenancy.md](01-groups-into-tenancy.md) | Agreed, not started |
+| [02-vehicle-memberships.md](02-vehicle-memberships.md) | Agreed, not started |
 
 ## Writing one
 
