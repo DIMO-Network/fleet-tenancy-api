@@ -1555,6 +1555,14 @@ LWD license `0x51dacC…` as a `tenant_credentials` row with
 fleet-lite changes are inert until both exist — managed tenants keep 403ing
 exactly as today.
 
+**The registration ran on 2026-08-15** (through the tunnel, before either PR
+merged — the row is inert until a caller presents that license, so order with
+the code deploys does not matter for this step alone): tenant
+`bf1aafcc-2dde-47ef-a52b-5bdb11dd82df`, and a re-run proved the guard
+(`INSERT 0 0`, still exactly one `is_service_caller` row). What remains is
+merge + deploy of the three PRs in order: #43 here, then fleet-lite #125 and
+#126 together.
+
 **Verification gate:** `tenancy-check` still clean (the bounded path is
 untouched); then the real thing — jreate@me.com into fleets.dimo.co, lands in
 TRAST, sees exactly vehicle 190171, telemetry loads; then `tenancy-diff` and
