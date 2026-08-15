@@ -113,12 +113,22 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	v1.Get("/authz", authzCtrl.GetAuthz)
 	v1.Get("/resolve/client-id/:clientId", resolveCtrl.ResolveClientID)
 
+	// The one read with no tenant in the path: which tenants a wallet belongs
+	// to. This is what fleet-lite asks at login, before it has a Tenant-Id to
+	// send. Scope is enforced inside the query — each row must pass the same
+	// expression CallerMayAccess runs — rather than by assertScope, which needs
+	// a single subject.
+	v1.Get("/tenants", tenantsCtrl.ListWalletTenants)
+
 	// Membership writes. Callers read their authorization answers from /authz
 	// above, so this is where the grant that produces those answers has to
 	// land — otherwise a caller writes a membership into its own table, asks
 	// here whether that member may act, and is told no.
 	v1.Put("/tenants/:tenantId/members/:wallet", membersCtrl.PutMember)
 	v1.Delete("/tenants/:tenantId/members/:wallet", membersCtrl.DeleteMember)
+	// Login telemetry: last_login_at drives the callers' sync tiering, and the
+	// membership row here is the only one a managed tenant's member has.
+	v1.Post("/tenants/:tenantId/members/:wallet/login", membersCtrl.LoginTouch)
 
 	// On-behalf provisioning and the token minter. Registered before the
 	// parameterised member routes matter-of-factly — fiber matches "provision"

@@ -32,6 +32,31 @@ func NewTenantsController(logger *zerolog.Logger, tenants *service.TenantService
 	return &TenantsController{logger: logger, tenants: tenants, caller: caller}
 }
 
+// ListWalletTenants — GET /v1/tenants?wallet=&surface=
+//
+// The one read on this surface with no tenant in the path: it answers "which
+// tenants does this wallet belong to", which is what a product must ask before
+// it has a Tenant-Id to send. There is no assertScope call because there is no
+// single subject — the service filters the rows to the caller's scope instead,
+// using the same expression assertScope would have run per tenant. A caller
+// outside every row's scope gets an empty list, not a 403: an empty answer is
+// the true one.
+func (c *TenantsController) ListWalletTenants(ctx *fiber.Ctx) error {
+	wallet := ctx.Query("wallet")
+	if wallet == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "wallet is required")
+	}
+	tenants, err := c.tenants.ListTenantsForWallet(ctx.Context(), c.caller(ctx), wallet, ctx.Query("surface"))
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidSurface) {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		c.logger.Err(err).Str("wallet", wallet).Msg("list wallet tenants")
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to list tenants")
+	}
+	return ctx.JSON(tenants)
+}
+
 // ListChildren — GET /v1/operators/:operatorId/children
 func (c *TenantsController) ListChildren(ctx *fiber.Ctx) error {
 	operatorID := ctx.Params("operatorId")

@@ -72,6 +72,32 @@ type UpdateTenantInput struct {
 	ExternalRef         *string `json:"externalRef,omitempty"`
 }
 
+// Surfaces a wallet-tenants listing can be filtered for. The surface names the
+// product asking, and the filter is what membership in that product means:
+// fleet-lite sessions require an active, fleet-lite-visible tenant, while the
+// console works on operator tenants only.
+const (
+	SurfaceFleetLite = "fleet_lite"
+	SurfaceB2B       = "b2b"
+)
+
+// WalletTenant is one row of "which tenants does this wallet belong to" — the
+// tenant joined with the wallet's own membership in it. Direct memberships
+// only: a delegation is an operator's management right and never appears in a
+// tenant list a session could be opened from.
+type WalletTenant struct {
+	TenantID        string `json:"tenantId"`
+	Name            string `json:"name"`
+	Kind            string `json:"kind"`
+	EntitlementMode string `json:"entitlementMode"`
+	Role            string `json:"role"`
+	// Permissions is authoritative for what the wallet may do; Role is a label.
+	Permissions []string `json:"permissions"`
+	// ScopeGroupIDs nil means unrestricted; an empty array means restricted to
+	// nothing. Same encoding as Member and the authz answer.
+	ScopeGroupIDs []string `json:"scopeGroupIds"`
+}
+
 // Member is the wire shape of one membership.
 type Member struct {
 	Wallet      string   `json:"wallet"`

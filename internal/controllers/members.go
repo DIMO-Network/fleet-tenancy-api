@@ -92,6 +92,42 @@ func (c *MembersController) DeleteMember(ctx *fiber.Ctx) error {
 	return ctx.SendStatus(fiber.StatusNoContent)
 }
 
+// LoginTouch — POST /v1/tenants/:tenantId/members/:wallet/login
+//
+// Stamps the membership's last_login_at and captures the login email, which is
+// telemetry rather than authorization — the sync tiering reads the stamp, and
+// nothing gates on it. 204 whether or not the membership was found: a member
+// revoked inside the authz cache window can still send this, and failing their
+// request over a lost stamp would fail a session that authz already admitted.
+func (c *MembersController) LoginTouch(ctx *fiber.Ctx) error {
+	tenantID := ctx.Params("tenantId")
+	wallet := ctx.Params("wallet")
+	if tenantID == "" || wallet == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "tenantId and wallet are required")
+	}
+
+	var body struct {
+		Email string `json:"email"`
+	}
+	// Body is optional; a parse failure just means no email arrived.
+	_ = ctx.BodyParser(&body)
+
+	if err := c.assertScope(ctx, tenantID, "login touch"); err != nil {
+		return err
+	}
+
+	found, err := c.members.TouchLogin(ctx.Context(), tenantID, wallet, body.Email)
+	if err != nil {
+		c.logger.Err(err).Str("tenant_id", tenantID).Msg("login touch")
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to record login")
+	}
+	if !found {
+		c.logger.Debug().Str("tenant_id", tenantID).Str("wallet", wallet).
+			Msg("login touch for a wallet with no membership")
+	}
+	return ctx.SendStatus(fiber.StatusNoContent)
+}
+
 func (c *MembersController) assertScope(ctx *fiber.Ctx, tenantID, op string) error {
 	caller := c.caller(ctx)
 	ok, err := c.tenants.CallerMayAccess(ctx.Context(), caller, tenantID)

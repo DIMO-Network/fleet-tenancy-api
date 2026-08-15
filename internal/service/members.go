@@ -205,6 +205,49 @@ func (s *MemberService) Remove(ctx context.Context, tenantID, wallet string) err
 	return nil
 }
 
+// TouchLogin stamps a member's last_login_at, and fills the users row's email
+// only when it has none. Reported as found/not-found via the bool rather than
+// an error: a missing row here usually means the member was revoked inside the
+// authz cache window, which the caller treats as telemetry lost, not a fault.
+//
+// The fill-if-empty rule for email is deliberate, and different from
+// fleet-lite's local behaviour (which overwrites). The users row is shared
+// identity across every tenant the person belongs to, and the login email is
+// client-supplied — provisioning's email is the better source, so a login only
+// ever adds knowledge where there was none.
+func (s *MemberService) TouchLogin(ctx context.Context, tenantID, wallet, email string) (bool, error) {
+	if tenantID == "" || wallet == "" {
+		return false, fmt.Errorf("tenantID and wallet are required")
+	}
+
+	res, err := s.pdb.DBS().Writer.ExecContext(ctx,
+		`UPDATE memberships SET last_login_at = NOW(), updated_at = NOW()
+		  WHERE tenant_id = $1 AND lower(wallet) = lower($2)`,
+		tenantID, wallet)
+	if err != nil {
+		return false, fmt.Errorf("touch login: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+
+	if email != "" {
+		if _, err := s.pdb.DBS().Writer.ExecContext(ctx,
+			`UPDATE users SET email = $1, updated_at = NOW()
+			  WHERE lower(wallet) = lower($2) AND COALESCE(email, '') = ''`,
+			email, wallet); err != nil {
+			// The stamp is what the caller came for and it is already written.
+			s.logger.Warn().Err(err).Str("wallet", wallet).
+				Msg("touch login: could not fill user email")
+		}
+	}
+	return true, nil
+}
+
 // normaliseOptionalWallet checksums a wallet, leaving the empty string empty so
 // NULLIF still sees it. common.HexToAddress("") returns the zero address, which
 // would otherwise be recorded as a real actor.
