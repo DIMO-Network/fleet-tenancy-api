@@ -1523,3 +1523,39 @@ pre-existing ruptela unknown-IMEI ingest failures. fleet-lite's half had been
 live since `v0.8.0` the same day, so **P5a is now fully deployed on both sides
 and its soak is running in production rather than pending.** The P5b blockers
 recorded above are unchanged.
+
+## FLEET-LITE OPENS OPERATOR-MANAGED TENANTS — built 2026-08-15, not yet merged
+
+The first real provisioning run (TRAST under Kaufmann, 2026-08-14) proved the
+console half works end to end and exposed that the fleet-lite half did not
+exist: the provisioned member logs into fleets.dimo.co and gets the self-serve
+onboarding screen. The plan, decisions and registration SQL are in
+[`plans/03-fleet-lite-operator-tenants.md`](plans/03-fleet-lite-operator-tenants.md)
+— **start there.**
+
+Built, in dependency order:
+
+| Repo | Branch | What |
+|---|---|---|
+| this | `feat/wallet-tenants` | `GET /v1/tenants?wallet=&surface=` (scope-filtered per row with the CallerMayAccess expression) + `POST /v1/tenants/{id}/members/{wallet}/login` |
+| fleet-lite | `feat/operator-tenants` | app identity (LWD license as registered service caller) in the tenancy client; `GET /tenants` unions local + tenancy; middleware mirrors unknown tenants locally; DimoAuthProvider mints managed tenants' JWTs via the tenancy minter; explicit-mode entitlement sync **with deletion** |
+| fleet-lite | `feat/member-write-through` (stacked) | the divergence fix: member/invitation writes go through to `PUT/DELETE /v1/.../members/{wallet}` (grants local-first, revokes remote-first, read-modify-write so console-granted capabilities survive), and the five owner gates become capability checks |
+
+**Found while planning, worth knowing even if this programme stalls:** the
+"both write memberships here (2026-08-12)" line earlier in this file was wrong
+about fleet-lite — only kaufmann got the write half. Every fleet-lite member
+write since cutover has reported success and conferred nothing. The stacked
+branch is the fix; until it deploys, fleet-lite member management remains
+decorative.
+
+**Deploy order is the usual one, plus a data step in the middle:** this
+service first, then the registration SQL from the plan appendix (fleet-lite's
+LWD license `0x51dacC…` as a `tenant_credentials` row with
+`is_service_caller=true`, no key material), then the fleet-lite branches. The
+fleet-lite changes are inert until both exist — managed tenants keep 403ing
+exactly as today.
+
+**Verification gate:** `tenancy-check` still clean (the bounded path is
+untouched); then the real thing — jreate@me.com into fleets.dimo.co, lands in
+TRAST, sees exactly vehicle 190171, telemetry loads; then `tenancy-diff` and
+`groups-diff` re-run clean.

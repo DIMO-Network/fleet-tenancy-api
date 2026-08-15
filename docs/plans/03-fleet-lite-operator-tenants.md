@@ -90,6 +90,50 @@ row, then fleet-lite. The fleet-lite changes are inert until both exist —
 managed tenants simply keep 403ing as they do today — so a half-deployed state
 is the current state, not a new failure mode.
 
+## Appendix — registering fleet-lite's service identity
+
+Run once against prod (through the tunnel), after this service's PR deploys
+and before fleet-lite's. Idempotent: the guard makes a re-run a no-op.
+
+```sql
+BEGIN;
+
+-- fleet-lite-app's own identity: the Login-with-DIMO license. The private key
+-- lives ONLY in prod/fleet-lite-app's DIMO_AUTH_PRIVATE_KEY; this row carries
+-- no key material because nothing ever mints AS this identity server-side —
+-- it exists so layer 2 can resolve the JWT to a caller and layer 3 can see
+-- is_service_caller.
+--
+-- kind='operator' + fleet_lite_enabled=false + zero memberships: it appears
+-- in no wallet listing, no fleet-lite tenant list, and no console children
+-- list. The backfill never deletes tenants absent from its sources, so a
+-- re-run leaves it alone.
+WITH app_tenant AS (
+  INSERT INTO fleet_tenancy_api.tenants (name, kind, status, entitlement_mode, fleet_lite_enabled)
+  SELECT 'fleet-lite-app (service identity)', 'operator', 'active', 'implicit', FALSE
+  WHERE NOT EXISTS (
+    SELECT 1 FROM fleet_tenancy_api.tenant_credentials
+     WHERE lower(dimo_client_id) = lower('0x51dacC165f1306Abfbf0a6312ec96E13AAA826DB'))
+  RETURNING id
+)
+INSERT INTO fleet_tenancy_api.tenant_credentials (tenant_id, dimo_client_id, is_service_caller)
+SELECT id, '0x51dacC165f1306Abfbf0a6312ec96E13AAA826DB', TRUE FROM app_tenant;
+
+COMMIT;
+
+-- Verify: exactly one row, is_service_caller = true.
+SELECT t.id, t.name, c.dimo_client_id, c.is_service_caller
+  FROM fleet_tenancy_api.tenant_credentials c JOIN fleet_tenancy_api.tenants t ON t.id = c.tenant_id
+ WHERE c.is_service_caller;
+```
+
+Worth stating because the flag is powerful: this credential may act on ANY
+tenant across the whole `/v1` surface, including minting any tenant's
+dimo-token. That is precisely fleet-lite's job — it is the customer product
+serving every managed tenant — and the key never leaves fleet-lite's own
+secret. The same client id is configured in b2b as the frontend Login-with-DIMO
+app id, but b2b holds no key and cannot authenticate with it.
+
 ## Verification gate
 
 - `tenancy-check` still passes for all credentialed tenants (no regression on
