@@ -60,6 +60,24 @@ type CreateTenantInput struct {
 	ExternalRef *string `json:"externalRef,omitempty"`
 }
 
+// CreateSelfServeInput creates an unparented self-serve tenant with its own
+// credential and its owner, atomically. Kind, parent, managed and entitlement
+// mode are not accepted: this endpoint creates exactly one thing — an
+// unmanaged, implicit-mode tenant that resolves to its own license.
+type CreateSelfServeInput struct {
+	Name        string `json:"name"`
+	ClientID    string `json:"clientId"`
+	APIKey      string `json:"apiKey"`
+	OwnerWallet string `json:"ownerWallet"`
+	OwnerEmail  string `json:"ownerEmail,omitempty"`
+}
+
+// SetCredentialsInput replaces a tenant's own developer license.
+type SetCredentialsInput struct {
+	ClientID string `json:"clientId"`
+	APIKey   string `json:"apiKey"`
+}
+
 // UpdateTenantInput patches a tenant. Every field is optional; a nil pointer
 // means "leave alone", which is why these are pointers rather than values —
 // with plain types, "" and false are indistinguishable from absent, and

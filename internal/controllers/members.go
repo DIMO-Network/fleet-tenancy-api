@@ -155,5 +155,8 @@ func (c *MembersController) assertScope(ctx *fiber.Ctx, tenantID, op string) err
 func isBadRequest(err error) bool {
 	msg := err.Error()
 	return msg == "scopeGroupIds is required (null for unrestricted, [] for no groups)" ||
-		msg == "tenantID and wallet are required"
+		msg == "tenantID and wallet are required" ||
+		msg == "name is required" ||
+		msg == "clientId and apiKey are required" ||
+		msg == "ownerWallet is required"
 }

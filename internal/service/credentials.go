@@ -198,6 +198,24 @@ func (s *CredentialService) SignAsTenant(ctx context.Context, tenantID string, m
 	return sig, cred, nil
 }
 
+// ValidateCredential proves a client id + plaintext key can actually mint a
+// developer JWT, before anything persists them. Runs through minterFor, so a
+// successful validation also warms the exact minter the credential will use
+// once stored — and the fingerprint keying means a later rotation rebuilds it.
+func (s *CredentialService) ValidateCredential(clientID, apiKeyPlain string) error {
+	if clientID == "" || apiKeyPlain == "" {
+		return fmt.Errorf("client id and API key are required")
+	}
+	minter, err := s.minterFor(clientID, apiKeyPlain)
+	if err != nil {
+		return err
+	}
+	if minter.GetToken() == nil {
+		return fmt.Errorf("minting a developer JWT for client id %s failed", clientID)
+	}
+	return nil
+}
+
 // signERC191 is the personal_sign scheme both source apps used (kaufmann's
 // vinvc.SignMessage, fleet-lite's signDataSecp256k1): 0x-prefixed hex of the
 // 65-byte signature with V as 27/28.

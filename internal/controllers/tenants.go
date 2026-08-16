@@ -22,14 +22,76 @@ import (
 // user's own DIMO JWT. That surface stays cheap to add because the work is in
 // the service layer — only the wrapper that establishes who is asking differs.
 type TenantsController struct {
-	logger  *zerolog.Logger
-	tenants *service.TenantService
-	caller  CallerResolver
+	logger    *zerolog.Logger
+	tenants   *service.TenantService
+	selfserve *service.SelfServeService
+	caller    CallerResolver
 }
 
 func NewTenantsController(logger *zerolog.Logger, tenants *service.TenantService,
-	caller CallerResolver) *TenantsController {
-	return &TenantsController{logger: logger, tenants: tenants, caller: caller}
+	selfserve *service.SelfServeService, caller CallerResolver) *TenantsController {
+	return &TenantsController{logger: logger, tenants: tenants, selfserve: selfserve, caller: caller}
+}
+
+// CreateSelfServeTenant — POST /v1/tenants
+//
+// Service callers only, deliberately: an unparented tenant belongs to nobody's
+// scope, so the ordinary caller rule ("a tenant whose effective credential is
+// yours") has nothing to check against — and the only legitimate creator of
+// self-serve tenants is the trusted customer product mediating signup. An
+// operator creating a customer uses POST /operators/{id}/customers, where the
+// parent is in the path and the scope rule applies.
+func (c *TenantsController) CreateSelfServeTenant(ctx *fiber.Ctx) error {
+	caller := c.caller(ctx)
+	if caller == nil || !caller.IsService {
+		c.logger.Warn().Str("caller_tenant", callerID(caller)).
+			Msg("/v1: non-service caller tried to create a self-serve tenant")
+		return fiber.NewError(fiber.StatusForbidden, "only a service caller may create self-serve tenants")
+	}
+
+	var body models.CreateSelfServeInput
+	if err := ctx.BodyParser(&body); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+
+	t, err := c.selfserve.Create(ctx.Context(), &body)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrCredentialInvalid):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		case errors.Is(err, service.ErrClientIDRegistered):
+			return fiber.NewError(fiber.StatusConflict, err.Error())
+		case isBadRequest(err):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		c.logger.Err(err).Str("name", body.Name).Msg("create self-serve tenant")
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to create tenant")
+	}
+	return ctx.Status(fiber.StatusCreated).JSON(t)
+}
+
+// SetCredentials — PUT /v1/tenants/:tenantId/credentials
+func (c *TenantsController) SetCredentials(ctx *fiber.Ctx) error {
+	tenantID := ctx.Params("tenantId")
+	if err := c.assertScope(ctx, tenantID, "set credentials"); err != nil {
+		return err
+	}
+	var body models.SetCredentialsInput
+	if err := ctx.BodyParser(&body); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if err := c.selfserve.SetCredentials(ctx.Context(), tenantID, &body); err != nil {
+		switch {
+		case errors.Is(err, service.ErrCredentialInvalid):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		case errors.Is(err, service.ErrClientIDRegistered):
+			return fiber.NewError(fiber.StatusConflict, err.Error())
+		case isBadRequest(err):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		return c.mapError(err, tenantID, "set credentials")
+	}
+	return ctx.SendStatus(fiber.StatusNoContent)
 }
 
 // ListWalletTenants — GET /v1/tenants?wallet=&surface=
