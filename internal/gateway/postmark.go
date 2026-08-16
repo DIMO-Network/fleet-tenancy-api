@@ -70,6 +70,62 @@ func (p *PostmarkAPI) SendTemplated(from, to, templateAlias string, model any) e
 	return nil
 }
 
+// InvitationModel is substituted into the Postmark invitation template. Field
+// names must match the {{mustache}} variables in the template — the aliases
+// are fleet-lite's, living server-side in Postmark, so this shape is theirs.
+type InvitationModel struct {
+	TenantName string `json:"tenant_name"`
+	AcceptURL  string `json:"accept_url"`
+	Inviter    string `json:"inviter"`
+	ExpiresIn  string `json:"expires_in"`
+}
+
+// SendInvitation sends one invitation email (POST /email/withTemplate) and
+// returns Postmark's MessageID ("" when sending is disabled).
+//
+// metadata is attached to the message and echoed back verbatim in every
+// webhook event (delivery/open/bounce) — the invitation id rides here so those
+// events correlate back to the row, with the MessageID as the fallback key.
+//
+// Differs from SendTemplated in exactly what invitation tracking needs: the
+// MessageID comes back, metadata goes out, and opens are tracked (per-message
+// opt-in; best-effort, needs the client to load images).
+func (p *PostmarkAPI) SendInvitation(from, to, templateAlias string, model InvitationModel, metadata map[string]string) (string, error) {
+	if !p.Enabled() {
+		// Local-dev sink: nothing can send, so surface the accept link in the
+		// logs — copy it from there to exercise the accept flow without any
+		// email infrastructure. The plaintext token is IN this link; that is
+		// acceptable only because an unconfigured Postmark means local dev.
+		p.logger.Info().Str("to", to).Str("template", templateAlias).
+			Str("accept_url", model.AcceptURL).
+			Msg("postmark not configured; invitation email skipped — use this accept link locally")
+		return "", nil
+	}
+	payload := map[string]any{
+		"From":          from,
+		"To":            to,
+		"TemplateAlias": templateAlias,
+		"TemplateModel": model,
+		"MessageStream": "outbound",
+		"TrackOpens":    true,
+	}
+	if len(metadata) > 0 {
+		payload["Metadata"] = metadata
+	}
+	var resp struct {
+		ErrorCode int    `json:"ErrorCode"`
+		Message   string `json:"Message"`
+		MessageID string `json:"MessageID"`
+	}
+	if err := p.do("POST", "/email/withTemplate", payload, &resp); err != nil {
+		return "", err
+	}
+	if resp.ErrorCode != 0 {
+		return "", fmt.Errorf("postmark send error %d: %s", resp.ErrorCode, resp.Message)
+	}
+	return resp.MessageID, nil
+}
+
 // UpsertTemplate creates or updates a template by alias, for the
 // push-postmark-templates command. Postmark has no single upsert call, so PUT
 // (update by alias) falls back to POST (create) on error 1101 (unknown alias).

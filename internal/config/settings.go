@@ -79,6 +79,25 @@ type Settings struct {
 	ProvisionEmailFrom     string  `yaml:"PROVISION_EMAIL_FROM"`
 	ProvisionTemplateAlias string  `yaml:"POSTMARK_PROVISION_TEMPLATE_ALIAS"`
 	FleetAppBaseURL        url.URL `yaml:"FLEET_APP_BASE_URL"`
+
+	// Email invitations (docs/plans/04-invitations-into-tenancy.md). Key names
+	// match fleet-lite-app's exactly — the flow moved here, and identical names
+	// keep the Postmark-side configuration (template aliases, webhook secret)
+	// portable between the two while both exist.
+	//
+	// Like the provisioning email, none of these are boot-required: an empty
+	// Postmark token means invites are recorded but report emailSent=false, and
+	// an empty webhook secret disables the /webhooks/postmark endpoint.
+	//
+	// InviteAcceptURLBase is where the emailed accept link points. Every accept
+	// happens in fleet-lite regardless of who sent the invite — operator-sent
+	// invites link to the same page — so there is one configured base, not one
+	// per surface.
+	PostmarkWebhookSecret   string  `yaml:"POSTMARK_WEBHOOK_SECRET"` // secret
+	InvitationFromEmail     string  `yaml:"INVITATION_FROM_EMAIL"`
+	InvitationTemplateAlias string  `yaml:"POSTMARK_INVITATION_TEMPLATE_ALIAS"`
+	InviteExpiryHours       int     `yaml:"INVITE_EXPIRY_HOURS"`
+	InviteAcceptURLBase     url.URL `yaml:"INVITE_ACCEPT_URL_BASE"`
 }
 
 // IsLocal is "local" exactly. Anything else — including an unset ENVIRONMENT or

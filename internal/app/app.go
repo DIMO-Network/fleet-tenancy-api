@@ -76,6 +76,21 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	provisionCtrl := controllers.NewProvisionController(logger, provisionSvc, credSvc, tenantSvc, CallerFrom)
 	groupsCtrl := controllers.NewGroupsController(logger, service.NewGroupService(logger, pdb), tenantSvc, CallerFrom)
 
+	// Email invitations (docs/plans/04-invitations-into-tenancy.md, P1): the
+	// records and the dispatch both live here so the plaintext token exists in
+	// exactly one service's memory. Unconfigured Postmark means invitations
+	// are recorded and report emailSent=false, like the provisioning email.
+	invitationSvc := service.NewInvitationService(logger, pdb, settings,
+		gateway.NewPostmarkAPI(*logger, settings.PostmarkServerToken))
+	invitationsCtrl := controllers.NewInvitationsController(logger, invitationSvc, tenantSvc, CallerFrom)
+	webhooksCtrl := controllers.NewWebhooksController(logger, settings.PostmarkWebhookSecret, invitationSvc)
+
+	// Postmark's delivery/open/bounce events. Outside /v1 — Postmark cannot do
+	// DIMO JWTs — authenticated by basic auth against its own secret, which
+	// empty-disables the route. NOTE the chart still publishes no ingress;
+	// exposing exactly this path publicly is part of P2's webhook repoint.
+	app.Post("/webhooks/postmark", webhooksCtrl.HandlePostmark)
+
 	// Service-to-service surface. Callers are fleet-lite-app, kaufmann-oracle and
 	// the b2b proxy, authenticating with a DIMO developer-license JWT verified
 	// against the DIMO JWKS and resolved to a tenant via
@@ -189,6 +204,21 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// Fleet groups — P1 of the groups move (docs/plans/01-groups-into-tenancy.md):
 	// endpoints served, no caller yet. Both apps still own their local copies;
 	// P3's backfill and flagged reads are what start pointing them here.
+	// Email invitations — P1 of the invitations move: surface served, no
+	// caller yet. CRUD is tenant-scoped like everything else; the calling app
+	// owns the human's manage_members check (the BFF split), this service
+	// checks the caller tenant's scope.
+	v1.Get("/tenants/:tenantId/invitations", invitationsCtrl.List)
+	v1.Post("/tenants/:tenantId/invitations", invitationsCtrl.Create)
+	v1.Delete("/tenants/:tenantId/invitations/:invitationId", invitationsCtrl.Revoke)
+	// Resend is an action, not a PATCH: it mints a fresh token and the old
+	// link dies — a side effect no field update should imply.
+	v1.Post("/tenants/:tenantId/invitations/:invitationId/resend", invitationsCtrl.Resend)
+	// The one write with no tenant in the path: the token resolves it. The
+	// token authorizes, the trusted caller asserts the wallet, and caller
+	// scope is checked against the resolved tenant inside the service.
+	v1.Post("/invitations/accept", invitationsCtrl.Accept)
+
 	v1.Get("/tenants/:tenantId/groups", groupsCtrl.ListGroups)
 	v1.Get("/tenants/:tenantId/vehicle-groups", groupsCtrl.ListVehicleGroups)
 	v1.Post("/tenants/:tenantId/groups", groupsCtrl.CreateGroup)

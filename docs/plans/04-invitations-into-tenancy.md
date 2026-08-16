@@ -1,7 +1,9 @@
 # Invitations move into fleet-tenancy-api
 
-Status: **planned 2026-08-16, nothing built.** Written as the handoff for the
-next session, immediately after the self-serve creation write-through
+Status: **P1 built 2026-08-16** (branch `invitations-p1`) — migration
+`20260816120000`, `InvitationService`, the `/v1` routes, the Postmark send and
+the webhook endpoint, all tested; no caller yet. P2–P4 remain. Originally
+written as the handoff immediately after the self-serve creation write-through
 (plan 03's closing step) deployed and every other write path was cut over.
 Invitations are the last membership-adjacent record living outside this
 service.
@@ -30,7 +32,16 @@ invitation is not.**
    Groups have lived here since P1/P3 — the authority should validate against
    itself.
 
-## Decisions (proposed, not yet locked — settle before building)
+## Decisions (adopted as proposed at the P1 build, 2026-08-16)
+
+Two naming details settled during the build: the settings keys match
+fleet-lite's exactly (`INVITATION_FROM_EMAIL`,
+`POSTMARK_INVITATION_TEMPLATE_ALIAS`, `INVITE_EXPIRY_HOURS`,
+`POSTMARK_WEBHOOK_SECRET`; plus this service's `INVITE_ACCEPT_URL_BASE`), and
+accept derives the membership's permissions from the invite's role via the Q5
+mapping (owner → manage_members + manage_settings, member → none), merging
+with any existing membership the way fleet-lite's GrantMember does — union of
+capabilities, higher role label, scope set verbatim.
 
 | Decision | Proposal | Why |
 |---|---|---|
@@ -105,6 +116,13 @@ webhook route kept but inert once Postmark's webhook URL repoints. An
 Postmark webhook URL is Postmark-side config, not a deploy — coordinate the
 repoint with the flag flip, and remember both receivers tolerate unknown
 message ids silently.
+
+**P2 also needs an ingress this chart deliberately does not have.** The
+service is cluster-internal by design, but Postmark posts from the public
+internet — so before the webhook URL can repoint, the chart must expose
+exactly `POST /webhooks/postmark` (an ingress limited to that path, in front
+of the basic-auth check that already gates it). Until then the endpoint
+exists and is exercised only by tests; fleet-lite keeps receiving events.
 
 **P3 — the console.** kaufmann proxy routes (the #200 pattern:
 `/v1/customers/{id}/invitations…`), b2b BFF routes + an Invitations section on

@@ -57,14 +57,20 @@ type MemberWrite struct {
 // present is false when the field was omitted entirely, which callers must
 // treat as a bad request rather than a default.
 func (m *MemberWrite) Scope() (groups []string, unrestricted bool, present bool) {
-	if len(m.ScopeGroupIDs) == 0 {
+	return decodeScope(m.ScopeGroupIDs)
+}
+
+// decodeScope is the one reading of the three-valued scope encoding, shared by
+// every write body that carries it (memberships, invitations).
+func decodeScope(raw json.RawMessage) (groups []string, unrestricted bool, present bool) {
+	if len(raw) == 0 {
 		return nil, false, false
 	}
-	if string(m.ScopeGroupIDs) == "null" {
+	if string(raw) == "null" {
 		return nil, true, true
 	}
 	var out []string
-	if err := json.Unmarshal(m.ScopeGroupIDs, &out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, false, false
 	}
 	if out == nil {
