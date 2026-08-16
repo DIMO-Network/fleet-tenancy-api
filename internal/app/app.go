@@ -80,16 +80,13 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// records and the dispatch both live here so the plaintext token exists in
 	// exactly one service's memory. Unconfigured Postmark means invitations
 	// are recorded and report emailSent=false, like the provisioning email.
+	//
+	// Postmark's delivery webhook is deliberately NOT registered on this app:
+	// it is the one surface that must be publicly reachable, so it lives on
+	// its own listener and its own port. See WebhookApp.
 	invitationSvc := service.NewInvitationService(logger, pdb, settings,
 		gateway.NewPostmarkAPI(*logger, settings.PostmarkServerToken))
 	invitationsCtrl := controllers.NewInvitationsController(logger, invitationSvc, tenantSvc, CallerFrom)
-	webhooksCtrl := controllers.NewWebhooksController(logger, settings.PostmarkWebhookSecret, invitationSvc)
-
-	// Postmark's delivery/open/bounce events. Outside /v1 — Postmark cannot do
-	// DIMO JWTs — authenticated by basic auth against its own secret, which
-	// empty-disables the route. NOTE the chart still publishes no ingress;
-	// exposing exactly this path publicly is part of P2's webhook repoint.
-	app.Post("/webhooks/postmark", webhooksCtrl.HandlePostmark)
 
 	// Service-to-service surface. Callers are fleet-lite-app, kaufmann-oracle and
 	// the b2b proxy, authenticating with a DIMO developer-license JWT verified

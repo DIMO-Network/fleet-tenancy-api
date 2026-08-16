@@ -12,12 +12,18 @@ import (
 // environment. Field names and layout mirror fleet-lite-app and kaufmann-oracle
 // so all three deploy the same way and code stays portable between them.
 type Settings struct {
-	Environment    string      `yaml:"ENVIRONMENT"`
-	LogLevel       string      `yaml:"LOG_LEVEL"`
-	ServiceName    string      `yaml:"SERVICE_NAME"`
-	APIPort        int         `yaml:"API_PORT"`
-	MonitoringPort int         `yaml:"MONITORING_PORT"`
-	DB             db.Settings `yaml:"DB"` // secret
+	Environment    string `yaml:"ENVIRONMENT"`
+	LogLevel       string `yaml:"LOG_LEVEL"`
+	ServiceName    string `yaml:"SERVICE_NAME"`
+	APIPort        int    `yaml:"API_PORT"`
+	MonitoringPort int    `yaml:"MONITORING_PORT"`
+
+	// WebhookPort serves the ONE publicly reachable surface — Postmark's
+	// delivery webhook — on its own listener, so the chart's ingress can
+	// target it without /v1 being reachable from the internet even if that
+	// ingress is later misconfigured. See app.WebhookApp.
+	WebhookPort int         `yaml:"WEBHOOK_PORT"`
+	DB          db.Settings `yaml:"DB"` // secret
 
 	// JwtKeySetURL verifies both end-user JWTs and developer-license JWTs —
 	// they share the DIMO issuer.

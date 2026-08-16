@@ -67,6 +67,23 @@ func main() {
 	pdb := db.NewDbConnectionFromSettings(ctx, &settings.DB, true)
 	pdb.WaitForDB(logger)
 
+	// The public webhook surface listens separately from /v1 — see
+	// app.WebhookApp for why it is a second listener rather than a path rule.
+	// A bind failure is fatal and immediate: Listen returns straight away when
+	// the port cannot be taken, and a service that silently stopped receiving
+	// Postmark's delivery events would look exactly like email working fine.
+	webhookPort := settings.WebhookPort
+	if webhookPort == 0 {
+		webhookPort = 8087
+	}
+	webhooks := app.WebhookApp(&settings, &logger, &pdb)
+	go func() {
+		logger.Info().Int("port", webhookPort).Msg("starting webhook listener (public surface)")
+		if lerr := webhooks.Listen(":" + strconv.Itoa(webhookPort)); lerr != nil {
+			logger.Fatal().Err(lerr).Msg("webhook listener failed")
+		}
+	}()
+
 	server := app.App(&settings, &logger, commitHash, &pdb)
 	if lerr := server.Listen(":" + strconv.Itoa(port)); lerr != nil {
 		logger.Fatal().Err(lerr).Msg("server failed")
