@@ -1595,33 +1595,51 @@ TRAST, sees exactly vehicle 190171, telemetry loads; then `tenancy-diff` and
 `groups-diff` re-run clean. **Met 2026-08-16** — see the deployment section
 above for the two findings.
 
+### Self-serve creation write-through — DONE, deployed 2026-08-16
+
+`#44` here (`v0.10.0`, `43a7a5b`) and fleet-lite `#127` (`v0.12.0`,
+`28bd80b`), both rolled out clean. `POST /v1/tenants` creates tenant +
+credential + owner membership in one transaction (service callers only) and
+mints the id; fleet-lite creates remote-first and materialises its local row
+under that uuid. `PUT /v1/tenants/{id}/credentials` is the mint-validated
+rotation path — and the managed-customer graduation path. **Every write path
+is now cut over.**
+
+The two casualties of the old gap were resolved the same day:
+
+- **DIMO Test Fleet healed** by id-preserving registration (tenant +
+  ciphertext credential copy + owner membership, original timestamps —
+  the backfill's rule applied to one tenant, by hand through the tunnel).
+- **Wallet `0x264BC4…` in the Kaufmann tenant** had been granted fleet-lite
+  `owner` locally on 2026-08-14 — inside the inert-write window, so it
+  conferred nothing. Reviewed 2026-08-16: his remote admin capabilities are
+  the intended access, so the LOCAL label was aligned to `admin` rather than
+  replaying the owner grant (which would have added manage_settings on the
+  production operator tenant). Effective access unchanged.
+
+**Both fleet-lite diffs now run fully clean** — `differ=0, missing_remote=0`
+— for the first time since the write gap opened.
+
 ### What remains of this programme, in priority order
 
-1. **Self-serve creation write-through** — the broken-tenant finding above.
-   Needs a create endpoint here (`POST /v1/tenants` for an unparented
-   self-serve tenant + its credential, validated by minting, per the spec's
-   `/user/v1` shape but servable on `/v1` first), then fleet-lite's
-   `CreateTenant` and `UpdateSettings` (credential rotation) writing through.
-   Until it lands, creating a tenant in fleet-lite produces one that cannot
-   be opened.
-2. **Invitations move to tenancy** — accept now write-throughs the
+1. **Invitations move to tenancy** — accept now write-throughs the
    membership (fleet-lite #126), but the invitation records themselves are
    still fleet-lite-local, so the console cannot send or see invites for
    managed tenants. This is the heart of the deferred `/user/v1` question.
-3. **Collapse `GET /tenants` to tenancy-only** once (1) writes every tenant
-   through — the local-list union exists only because self-serve creation
-   does not.
-4. **Managed tenants read "cold" to the group-sync tiering** —
+2. **Collapse `GET /tenants` to tenancy-only** — every tenant now writes
+   through, so the local-list union is only a soak-period safety. After a
+   quiet window, drop it.
+3. **Managed tenants read "cold" to the group-sync tiering** —
    `HasRecentLogin` reads local `tenant_users`, which managed tenants never
    have; their `last_login_at` lives on the shared membership (written by
    the new login touch). Move the tiering read to tenancy or accept the
    weekly-pass cadence for managed tenants.
-5. **`prune-unshared-vehicles` predates explicit mode** — it fetches by the
+4. **`prune-unshared-vehicles` predates explicit mode** — it fetches by the
    tenant's own license and would error-skip a managed tenant. Harmless
    (the entitled sync prunes for them), but it should skip explicitly.
-6. **R6 scale tiering** (master-pass per operator, batched upserts) — still
+5. **R6 scale tiering** (master-pass per operator, batched upserts) — still
    deferred until an operator with a large fleet onboards a fleet-lite
    customer; the seam is `syncEntitledVehicles`.
-7. Then the old decommission list (migration-plan Phase 5): local
+6. Then the old decommission list (migration-plan Phase 5): local
    `tenant_users`/`invitations` become read caches and drop, alongside the
    groups-move P5 work already tracked above.
