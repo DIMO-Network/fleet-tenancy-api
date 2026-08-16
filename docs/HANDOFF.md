@@ -1622,21 +1622,30 @@ The two casualties of the old gap were resolved the same day:
 
 ### What remains of this programme, in priority order
 
-1. **Invitations move to tenancy** — **P1 built 2026-08-16** (branch
-   `invitations-p1`): migration `20260816120000`, `InvitationService`, the
-   `/v1/tenants/{id}/invitations` CRUD + resend, `POST /v1/invitations/accept`
-   (accept grants the membership and marks the row in one transaction),
-   Postmark send with locale templates, and `POST /webhooks/postmark` —
-   tested, no caller yet. The proposed decisions were adopted as written;
-   the plan records the two naming details settled during the build.
+1. **Invitations move to tenancy** — **P1 DEPLOYED 2026-08-16** (#45,
+   `v0.11.0`, image `35364e8`): migration `20260816120000`,
+   `InvitationService`, the `/v1/tenants/{id}/invitations` CRUD + resend,
+   `POST /v1/invitations/accept` (accept grants the membership and marks the
+   row in one transaction), Postmark send with locale templates, and
+   `POST /webhooks/postmark` — verified live from inside the pod (`/version`
+   = the deployed sha, new routes 401 without a key, webhook 403 without the
+   secret, zero errors after rollout). The proposed decisions were adopted
+   as written; the plan records the naming details settled during the build
+   and the deploy snag (an out-of-band draft `invitations` table sat in both
+   local and prod, empty; dropped so the migration could apply — the
+   crashlooping migrate container's "column does not exist" was IF NOT
+   EXISTS skipping the CREATE and the index statements hitting the old
+   table). `prod/fleet-tenancy-api/postmark_webhook_secret` exists in AWS
+   and the ExternalSecret synced it (64 chars, no whitespace).
    [`plans/04-invitations-into-tenancy.md`](plans/04-invitations-into-tenancy.md)
    — **P2 is next**: id-preserving backfill + flagged fleet-lite cutover
    (outstanding links must survive — the token hashes copy), then console
-   proxies + UI (P3), then the local table drops with Phase 5. Before the
-   chart with the new `postmark_webhook_secret` ref merges, the AWS entry
-   must exist (the #42 ExternalSecret lesson), and note P2's webhook
-   repoint needs an ingress for exactly `/webhooks/postmark` — this chart
-   deliberately has none.
+   proxies + UI (P3), then the local table drops with Phase 5. Note P2's
+   webhook repoint needs an ingress for exactly `/webhooks/postmark` — this
+   chart deliberately has none. Probing tip re-learned during verification:
+   the pods are meshed, so an unmeshed curl pod gets linkerd's empty-body
+   403 for every path except `/health`; probe via `kubectl debug
+   --target=fleet-tenancy-api` and curl localhost instead.
 2. **Collapse `GET /tenants` to tenancy-only** — every tenant now writes
    through, so the local-list union is only a soak-period safety. After a
    quiet window, drop it.

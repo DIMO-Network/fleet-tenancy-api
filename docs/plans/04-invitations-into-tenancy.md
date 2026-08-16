@@ -1,8 +1,18 @@
 # Invitations move into fleet-tenancy-api
 
-Status: **P1 built 2026-08-16** (branch `invitations-p1`) — migration
-`20260816120000`, `InvitationService`, the `/v1` routes, the Postmark send and
-the webhook endpoint, all tested; no caller yet. P2–P4 remain. Originally
+Status: **P1 DEPLOYED 2026-08-16** — PR #45, released `v0.11.0` (image
+`35364e8`), rollout verified: migration `20260816120000` applied, the new
+routes answer live and guarded, zero errors. No caller yet. P2–P4 remain.
+
+The deploy hit one snag worth knowing about: an out-of-band, hand-made draft
+`invitations` table (with a `permissions` column no shipped schema has)
+existed in BOTH the local dev database and prod — never in goose's history,
+presumably from an early spec-drafting session working schema-first. It was
+empty in both; dropped in both, after verifying zero rows, so the real
+migration could apply. In prod this presented as the migrate init container
+crashlooping on `column "postmark_message_id" does not exist` — a confusing
+error for a CREATE TABLE migration until you notice IF NOT EXISTS skipped the
+CREATE and the failure is the index statement hitting the older table. Originally
 written as the handoff immediately after the self-serve creation write-through
 (plan 03's closing step) deployed and every other write path was cut over.
 Invitations are the last membership-adjacent record living outside this
