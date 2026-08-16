@@ -1622,6 +1622,29 @@ The two casualties of the old gap were resolved the same day:
 
 ### What remains of this programme, in priority order
 
+0. **UNRELATED, FOUND 2026-08-16 — fleet-lite's groups cronjobs are failing
+   and nobody would know.** ArgoCD shows `fleet-lite-app` **Degraded** since
+   06:15 UTC (the `mirror-groups` schedule). `mirror-groups` last succeeded
+   **2026-08-14**; `groups-diff` has **never** recorded a success since its
+   cronjob was created. Both run fine when invoked by hand — `groups-diff`
+   in the app pod exits 0 with `87 groups, 82 agree, 5 remote-extra,
+   differ=0, missing_remote=0`, and a manually-triggered Job from the same
+   cronjob template completes — so the group data is NOT drifting and the
+   P3/P4 gate still holds. The failure is environmental and specific to the
+   scheduled runs.
+   **The blocker to diagnosing it: fleet-lite's cronjob Jobs vanish.**
+   `failedJobsHistoryLimit=3` and `ttlSecondsAfterFinished=3d` should retain
+   them, and kaufmann's identical cronjobs keep theirs for days, but
+   fleet-lite's leave nothing behind — so every failure erases its own
+   evidence. The two cronjob specs are otherwise identical (concurrency,
+   deadline, ttl, mesh annotations, proxy-shutdown wrapper). Leading
+   hypothesis is ArgoCD's automated prune removing Jobs that carry the app's
+   tracking labels but do not exist in git; kaufmann's surviving is the fact
+   that argues against it and needs explaining. **Next step: catch a failing
+   run in the act** — watch the 06:15/06:45 UTC window, or suspend the
+   cronjob and run the Job manually on that schedule — rather than inferring
+   from an empty job list.
+
 1. **Invitations move to tenancy** — **P1 DEPLOYED 2026-08-16** (#45,
    `v0.11.0`, image `35364e8`): migration `20260816120000`,
    `InvitationService`, the `/v1/tenants/{id}/invitations` CRUD + resend,
@@ -1663,3 +1686,28 @@ The two casualties of the old gap were resolved the same day:
 6. Then the old decommission list (migration-plan Phase 5): local
    `tenant_users`/`invitations` become read caches and drop, alongside the
    groups-move P5 work already tracked above.
+
+### Invitations P2 — backfilled and diffed, flag still OFF (2026-08-16)
+
+| Step | Result |
+|---|---|
+| `backfill-invitations -dry-run` | 14 source invitations (3 pending, 7 accepted, 4 revoked), 0 already here, `pending_and_unexpired=0` |
+| `backfill-invitations` (real) | **14 written**, counter reconciled against the source count |
+| Cross-database fingerprint | `md5(id||token_hash||status||epoch(expires_at))` over all rows, computed independently on each side: **`0aa609d94f2e4ac2c412bd87c49b1c19`, 14 rows, identical** |
+| fleet-lite `invitations-diff` | 6 tenants, 14 invitations, **14 agree, differ=0, missing_remote=0** |
+
+The fingerprint is the check worth repeating if this is ever re-run: it proves
+the fields that decide whether an emailed link resolves — id, token hash,
+status, expiry — match exactly, which neither the row counts nor the diff can
+show (the diff cannot see the hash, by design).
+
+**No live accept links exist in production right now.** All three pending
+invitations expired, the newest on 2026-08-07. The outstanding-link guarantee
+therefore has nothing to protect today, and real data will never exercise it —
+the deliberate before/after test is the only proof there will ever be. Do not
+skip it because the flip now looks safe.
+
+Still to do, in order: send a test invitation, flip `INVITES_FROM_TENANCY`
+(chart-only, fleet-lite `values-prod.yaml`), soak with the diff clean, accept
+the pre-flip invitation, then repoint Postmark's webhook URL — which needs the
+ingress in this repo's #47 enabled first.

@@ -1,8 +1,25 @@
 # Invitations move into fleet-tenancy-api
 
-Status: **P1 DEPLOYED 2026-08-16** — PR #45, released `v0.11.0` (image
-`35364e8`), rollout verified: migration `20260816120000` applied, the new
-routes answer live and guarded, zero errors. No caller yet. P2–P4 remain.
+Status: **P1 DEPLOYED, P2 BACKFILLED — 2026-08-16.** P1: PR #45, `v0.11.0`
+(image `35364e8`), migration `20260816120000` applied, routes live and
+guarded, zero errors. P2: `backfill-invitations` (#46, `v0.12.0`, image
+`752859a`) run against prod — **14 invitations copied, verified by
+fingerprinting `id + token_hash + status + expires_at` on BOTH databases
+independently: `0aa609d9…`, 14 rows, identical.** fleet-lite's flagged
+cutover (#128, `v0.13.0`) ships `INVITES_FROM_TENANCY=false`. The flag flip,
+the end-to-end link test and the Postmark repoint remain.
+
+The P2 gate is met: `invitations-diff` in prod reports **6 tenants, 14
+invitations, 14 agree, `differ=0, missing_remote=0`**.
+
+**There are currently no live accept links in production**, and that is a
+verified fact rather than an assumption: the backfill reports
+`pending_and_unexpired=0`, and fleet-lite's table confirms all three pending
+invitations expired, the newest on 2026-08-07. So the outstanding-link
+guarantee has nothing to protect *today* — which lowers the cutover risk
+considerably and simultaneously means real data will never exercise it. The
+deliberate before/after test below is the only thing that ever will; do not
+skip it on the grounds that the flip now looks safe.
 
 The deploy hit one snag worth knowing about: an out-of-band, hand-made draft
 `invitations` table (with a `permissions` column no shipped schema has)
