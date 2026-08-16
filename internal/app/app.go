@@ -53,7 +53,6 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	authzCtrl := controllers.NewAuthzController(logger, service.NewAuthzService(logger, pdb), tenantSvc, CallerFrom)
 	resolveCtrl := controllers.NewResolveController(logger, tenantSvc, CallerFrom)
 	membersCtrl := controllers.NewMembersController(logger, memberSvc, tenantSvc, CallerFrom)
-	tenantsCtrl := controllers.NewTenantsController(logger, tenantSvc, CallerFrom)
 	entitlementsCtrl := controllers.NewEntitlementsController(logger,
 		service.NewEntitlementService(logger, pdb), tenantSvc, CallerFrom)
 	membershipsCtrl := controllers.NewMembershipsController(logger,
@@ -64,6 +63,10 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// tenant key at runtime; everything else moves tokens, not keys.
 	credSvc := service.NewCredentialService(logger, pdb, settings,
 		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint))
+	// Self-serve creation and credential writes share the credential service
+	// so validation warms the exact minter the stored credential will use.
+	selfServeSvc := service.NewSelfServeService(logger, pdb, settings, tenantSvc, credSvc)
+	tenantsCtrl := controllers.NewTenantsController(logger, tenantSvc, selfServeSvc, CallerFrom)
 	provisionSvc := service.NewProvisionService(logger, pdb, memberSvc, credSvc,
 		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint))
 	// The one email this service sends: "you've been given access", on
@@ -143,8 +146,18 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// the scope check can see it.
 	v1.Get("/operators/:operatorId/children", tenantsCtrl.ListChildren)
 	v1.Post("/operators/:operatorId/customers", tenantsCtrl.CreateCustomer)
+	// Self-serve creation, the last un-cutover write: fleet-lite's POST
+	// /tenants writes here FIRST and materialises its local row under the id
+	// this service mints. Service callers only — an unparented tenant is in
+	// nobody's scope, so the ordinary caller rule has nothing to check.
+	v1.Post("/tenants", tenantsCtrl.CreateSelfServeTenant)
 	v1.Get("/tenants/:tenantId", tenantsCtrl.GetTenant)
 	v1.Patch("/tenants/:tenantId", tenantsCtrl.UpdateTenant)
+	// A tenant's own license: set at self-serve creation, replaced from
+	// fleet-lite's Settings, or granted to a managed customer as its
+	// graduation path — at which point effective-credential resolution stops
+	// falling through to its operator, with no other change anywhere.
+	v1.Put("/tenants/:tenantId/credentials", tenantsCtrl.SetCredentials)
 	v1.Get("/tenants/:tenantId/members", tenantsCtrl.ListMembers)
 
 	// Which vehicles a customer may see. This is the isolation boundary: under

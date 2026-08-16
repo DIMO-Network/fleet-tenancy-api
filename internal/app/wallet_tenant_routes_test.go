@@ -72,6 +72,37 @@ func TestWalletTenantRoutesAreRegisteredAndGuarded(t *testing.T) {
 		assert.Equal(t, "detail:aaaaaaaa-0000-0000-0000-000000000001", hit)
 	})
 
+	t.Run("self-serve create routes to the collection, not the customer path", func(t *testing.T) {
+		v1.Post("/tenants", func(c *fiber.Ctx) error {
+			hit = "create"
+			return c.SendStatus(fiber.StatusCreated)
+		})
+		v1.Put("/tenants/:tenantId/credentials", func(c *fiber.Ctx) error {
+			hit = "credentials:" + c.Params("tenantId")
+			return c.SendStatus(fiber.StatusNoContent)
+		})
+
+		hit = ""
+		resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/v1/tenants", nil), -1)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Empty(t, hit)
+
+		req := httptest.NewRequest(http.MethodPost, "/v1/tenants", nil)
+		req.Header.Set(TrustedCallerHeader, "secret")
+		resp, err = app.Test(req, -1)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
+		assert.Equal(t, "create", hit)
+
+		req = httptest.NewRequest(http.MethodPut, "/v1/tenants/aaaaaaaa-0000-0000-0000-000000000001/credentials", nil)
+		req.Header.Set(TrustedCallerHeader, "secret")
+		resp, err = app.Test(req, -1)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		assert.Equal(t, "credentials:aaaaaaaa-0000-0000-0000-000000000001", hit)
+	})
+
 	t.Run("the login touch is refused without a key and routed with one", func(t *testing.T) {
 		hit = ""
 		resp, err := app.Test(httptest.NewRequest(http.MethodPost, loginPath, nil), -1)
