@@ -53,6 +53,7 @@ func main() {
 		subcommands.Register(&migrateDBCmd{logger: logger, settings: settings}, "database")
 		subcommands.Register(&backfillCmd{logger: logger, settings: settings}, "database")
 		subcommands.Register(&backfillGroupsCmd{logger: logger, settings: settings}, "database")
+		subcommands.Register(&backfillInvitationsCmd{logger: logger, settings: settings}, "database")
 		subcommands.Register(&publishGroupAttestationsCmd{logger: logger, settings: settings}, "attestations")
 		subcommands.Register(&pushPostmarkTemplatesCmd{logger: logger, settings: settings}, "email")
 		flag.Parse()
