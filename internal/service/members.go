@@ -41,9 +41,40 @@ func (s *MemberService) Upsert(ctx context.Context, tenantID, wallet string, in 
 	if tenantID == "" || wallet == "" {
 		return fmt.Errorf("tenantID and wallet are required")
 	}
+	tx, err := s.pdb.DBS().Writer.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	checksummed, err := upsertMemberTx(ctx, tx, tenantID, wallet, in)
+	if err != nil {
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	_, unrestricted, _ := in.Scope()
+	s.logger.Info().
+		Str("tenant_id", tenantID).
+		Str("wallet", checksummed).
+		Str("role", in.Role).
+		Int("permissions", len(in.Permissions)).
+		Bool("unrestricted", unrestricted).
+		Msg("membership written")
+	return nil
+}
+
+// upsertMemberTx is Upsert's body inside a caller-owned transaction, so a
+// write that must be atomic with something else — the invitation accept marks
+// its row and grants in one transaction — shares this exact SQL instead of a
+// re-derivation that could drift. Returns the checksummed wallet it wrote.
+func upsertMemberTx(ctx context.Context, tx *sql.Tx, tenantID, wallet string, in *models.MemberWrite) (string, error) {
 	groups, unrestricted, present := in.Scope()
 	if !present {
-		return fmt.Errorf("scopeGroupIds is required (null for unrestricted, [] for no groups)")
+		return "", fmt.Errorf("scopeGroupIds is required (null for unrestricted, [] for no groups)")
 	}
 
 	// Stored EIP-55 checksummed, so callers that disagree on casing — kaufmann
@@ -60,22 +91,16 @@ func (s *MemberService) Upsert(ctx context.Context, tenantID, wallet string, in 
 	}
 	permsJSON, err := json.Marshal(perms)
 	if err != nil {
-		return fmt.Errorf("marshal permissions: %w", err)
+		return "", fmt.Errorf("marshal permissions: %w", err)
 	}
-
-	tx, err := s.pdb.DBS().Writer.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
 
 	var exists bool
 	err = tx.QueryRowContext(ctx, `SELECT true FROM tenants WHERE id = $1`, tenantID).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrTenantNotFound
+		return "", ErrTenantNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("load tenant %s: %w", tenantID, err)
+		return "", fmt.Errorf("load tenant %s: %w", tenantID, err)
 	}
 
 	// COALESCE keeps an existing email when the caller sends none: knowing a
@@ -86,7 +111,7 @@ func (s *MemberService) Upsert(ctx context.Context, tenantID, wallet string, in 
 		   email = COALESCE(NULLIF(EXCLUDED.email, ''), users.email),
 		   updated_at = NOW()`,
 		checksummed, in.Email); err != nil {
-		return fmt.Errorf("upsert user: %w", err)
+		return "", fmt.Errorf("upsert user: %w", err)
 	}
 
 	// scope_group_ids is NULL for unrestricted and a (possibly empty) array
@@ -113,21 +138,10 @@ func (s *MemberService) Upsert(ctx context.Context, tenantID, wallet string, in 
 		   updated_at           = NOW()`,
 		tenantID, checksummed, role, permsJSON, scopeArg,
 		normaliseOptionalWallet(in.GrantedByWallet), in.GrantedByTenantID); err != nil {
-		return fmt.Errorf("upsert membership: %w", err)
+		return "", fmt.Errorf("upsert membership: %w", err)
 	}
 
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-
-	s.logger.Info().
-		Str("tenant_id", tenantID).
-		Str("wallet", checksummed).
-		Str("role", role).
-		Int("permissions", len(perms)).
-		Bool("unrestricted", unrestricted).
-		Msg("membership written")
-	return nil
+	return checksummed, nil
 }
 
 // Get returns one membership in the same wire shape ListMembers uses, so a

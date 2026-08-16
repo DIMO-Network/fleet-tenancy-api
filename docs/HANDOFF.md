@@ -1622,17 +1622,21 @@ The two casualties of the old gap were resolved the same day:
 
 ### What remains of this programme, in priority order
 
-1. **Invitations move to tenancy** — planned in full, nothing built:
+1. **Invitations move to tenancy** — **P1 built 2026-08-16** (branch
+   `invitations-p1`): migration `20260816120000`, `InvitationService`, the
+   `/v1/tenants/{id}/invitations` CRUD + resend, `POST /v1/invitations/accept`
+   (accept grants the membership and marks the row in one transaction),
+   Postmark send with locale templates, and `POST /webhooks/postmark` —
+   tested, no caller yet. The proposed decisions were adopted as written;
+   the plan records the two naming details settled during the build.
    [`plans/04-invitations-into-tenancy.md`](plans/04-invitations-into-tenancy.md)
-   — **start there.** Accept already write-throughs the membership
-   (fleet-lite #126), but the records and the email dispatch are still
-   fleet-lite-local, so the console cannot send or see invites for managed
-   tenants. Four phases: surface here (records + Postmark send + webhook),
-   id-preserving backfill + flagged fleet-lite cutover (outstanding links
-   must survive — the token hashes copy), console proxies + UI, then the
-   local table drops with Phase 5. The proposed decisions (notably: `/v1`
-   not `/user/v1`, this service sends the email, trusted-caller-asserted
-   wallet on accept) are marked proposed — settle them before building.
+   — **P2 is next**: id-preserving backfill + flagged fleet-lite cutover
+   (outstanding links must survive — the token hashes copy), then console
+   proxies + UI (P3), then the local table drops with Phase 5. Before the
+   chart with the new `postmark_webhook_secret` ref merges, the AWS entry
+   must exist (the #42 ExternalSecret lesson), and note P2's webhook
+   repoint needs an ingress for exactly `/webhooks/postmark` — this chart
+   deliberately has none.
 2. **Collapse `GET /tenants` to tenancy-only** — every tenant now writes
    through, so the local-list union is only a soak-period safety. After a
    quiet window, drop it.

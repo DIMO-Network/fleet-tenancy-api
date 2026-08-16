@@ -33,6 +33,10 @@ env:
   PROVISION_EMAIL_FROM: no-reply@dimo.co
   POSTMARK_PROVISION_TEMPLATE_ALIAS: fleet-access-granted
   FLEET_APP_BASE_URL: https://fleets.dimo.co
+  INVITATION_FROM_EMAIL: no-reply@dimo.co
+  POSTMARK_INVITATION_TEMPLATE_ALIAS: fleet-invitation
+  INVITE_EXPIRY_HOURS: '168'
+  INVITE_ACCEPT_URL_BASE: https://fleets.dimo.co
   ATTEST_API_URL: https://attest.dimo.zone
   CHAIN_ID: '137'
 service:

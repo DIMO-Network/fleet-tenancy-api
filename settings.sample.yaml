@@ -36,3 +36,14 @@ ACCOUNTS_API_ENDPOINT: https://accounts.dimo.org
 # command needs these; the API serves without them.
 ATTEST_API_URL: https://attest.dimo.zone
 CHAIN_ID: 137
+
+# Email invitations (docs/plans/04-invitations-into-tenancy.md). Key names
+# match fleet-lite-app's — the flow moved here. None are boot-required: an
+# empty Postmark token records invites with emailSent=false, and an empty
+# webhook secret disables POST /webhooks/postmark.
+POSTMARK_WEBHOOK_SECRET: ""
+INVITATION_FROM_EMAIL: no-reply@dimo.co
+POSTMARK_INVITATION_TEMPLATE_ALIAS: fleet-invitation
+INVITE_EXPIRY_HOURS: 168
+# Where the emailed accept link points — always fleet-lite, whoever sent it.
+INVITE_ACCEPT_URL_BASE: https://fleets.dimo.co
