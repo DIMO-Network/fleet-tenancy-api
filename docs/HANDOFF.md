@@ -1559,11 +1559,69 @@ exactly as today.
 merged — the row is inert until a caller presents that license, so order with
 the code deploys does not matter for this step alone): tenant
 `bf1aafcc-2dde-47ef-a52b-5bdb11dd82df`, and a re-run proved the guard
-(`INSERT 0 0`, still exactly one `is_service_caller` row). What remains is
-merge + deploy of the three PRs in order: #43 here, then fleet-lite #125 and
-#126 together.
+(`INSERT 0 0`, still exactly one `is_service_caller` row).
+
+### DEPLOYED AND VERIFIED END TO END — 2026-08-15/16
+
+All three PRs merged and released in order: #43 → `v0.9.0` (`cf1694c`,
+rollout verified, zero errors), then fleet-lite #125 + #126 → `v0.11.0`
+(`c4932be`, same). **The Phase 3 exit criterion is met**: the TRAST member
+logged into fleets.dimo.co, landed in the tenant, and sees exactly vehicle
+190171 (Mercedes-Benz GLA 200, synced through the minter + entitlement path
+at 01:23:55Z) — no database touched. Both kaufmann diffs re-ran clean.
+
+Two things the verification surfaced:
+
+- **First-visit race, cosmetic:** opening a freshly provisioned tenant is
+  what triggers the mirror + initial sync, so the very first garage render
+  can beat the sync by a few seconds and shows empty until a refresh. Only
+  affects a managed tenant's first-ever visit.
+- **`POST /tenants` is the last un-cutover write, and it now BREAKS its own
+  tenants.** "DIMO Test Fleet" (`c8726e5f…`, created locally 2026-08-14
+  17:37, license `0x65e7Dd…`) exists only in fleet-lite; tenancy has never
+  seen its license, so layer 2 rejects every authz call made as it and its
+  owner gets 503s. Before this programme that was a listing gap; since
+  cutover it is a broken tenant. Every self-serve tenant created in
+  fleet-lite since the 2026-08-10 backfill has this problem. fleet-lite's
+  `tenancy-diff`/`groups-diff` fail loudly on it (good), which also means
+  they cannot run clean until it is fixed. Options: re-run the backfill
+  (converges, picks it up), register it by hand (ciphertext copies straight
+  across — the enc key is shared), or delete it if it was throwaway. The
+  real fix is self-serve creation write-through — see next steps below.
 
 **Verification gate:** `tenancy-check` still clean (the bounded path is
 untouched); then the real thing — jreate@me.com into fleets.dimo.co, lands in
 TRAST, sees exactly vehicle 190171, telemetry loads; then `tenancy-diff` and
-`groups-diff` re-run clean.
+`groups-diff` re-run clean. **Met 2026-08-16** — see the deployment section
+above for the two findings.
+
+### What remains of this programme, in priority order
+
+1. **Self-serve creation write-through** — the broken-tenant finding above.
+   Needs a create endpoint here (`POST /v1/tenants` for an unparented
+   self-serve tenant + its credential, validated by minting, per the spec's
+   `/user/v1` shape but servable on `/v1` first), then fleet-lite's
+   `CreateTenant` and `UpdateSettings` (credential rotation) writing through.
+   Until it lands, creating a tenant in fleet-lite produces one that cannot
+   be opened.
+2. **Invitations move to tenancy** — accept now write-throughs the
+   membership (fleet-lite #126), but the invitation records themselves are
+   still fleet-lite-local, so the console cannot send or see invites for
+   managed tenants. This is the heart of the deferred `/user/v1` question.
+3. **Collapse `GET /tenants` to tenancy-only** once (1) writes every tenant
+   through — the local-list union exists only because self-serve creation
+   does not.
+4. **Managed tenants read "cold" to the group-sync tiering** —
+   `HasRecentLogin` reads local `tenant_users`, which managed tenants never
+   have; their `last_login_at` lives on the shared membership (written by
+   the new login touch). Move the tiering read to tenancy or accept the
+   weekly-pass cadence for managed tenants.
+5. **`prune-unshared-vehicles` predates explicit mode** — it fetches by the
+   tenant's own license and would error-skip a managed tenant. Harmless
+   (the entitled sync prunes for them), but it should skip explicitly.
+6. **R6 scale tiering** (master-pass per operator, batched upserts) — still
+   deferred until an operator with a large fleet onboards a fleet-lite
+   customer; the seam is `syncEntitledVehicles`.
+7. Then the old decommission list (migration-plan Phase 5): local
+   `tenant_users`/`invitations` become read caches and drop, alongside the
+   groups-move P5 work already tracked above.
