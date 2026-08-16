@@ -405,24 +405,6 @@ func (s *InvitationService) Accept(ctx context.Context, in *models.InvitationAcc
 	return accepted, nil
 }
 
-// emailStatusRank orders email-tracking statuses for monotonic upgrades. A
-// status may only replace one with a strictly lower rank; unknown/empty ranks
-// lowest so any real status wins.
-func emailStatusRank(status string) int {
-	switch status {
-	case EmailStatusSent:
-		return 1
-	case EmailStatusDelivered:
-		return 2
-	case EmailStatusOpened:
-		return 3
-	case EmailStatusBounced:
-		return 4
-	default:
-		return 0
-	}
-}
-
 // ApplyEmailEvent records a Postmark webhook event (delivered/opened/bounced)
 // against the invitation it belongs to, resolved by invitation id from the
 // message metadata with the Postmark message id as fallback — copy BOTH in the
