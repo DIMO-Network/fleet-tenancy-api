@@ -1764,7 +1764,32 @@ therefore has nothing to protect today, and real data will never exercise it —
 the deliberate before/after test is the only proof there will ever be. Do not
 skip it because the flip now looks safe.
 
-Still to do, in order: send a test invitation, flip `INVITES_FROM_TENANCY`
-(chart-only, fleet-lite `values-prod.yaml`), soak with the diff clean, accept
-the pre-flip invitation, then repoint Postmark's webhook URL — which needs the
-ingress in this repo's #47 enabled first.
+**Still to do, in this order — and the second step is not optional:**
+
+1. **Send a test invitation** from fleet-lite while the flag is still off.
+2. **RE-RUN `backfill-invitations`.** With the flag off, fleet-lite writes new
+   invitations to its OWN table only, so anything created after the first
+   backfill — the test invitation included — does not exist here. After the
+   flip, `Accept` resolves the token against THIS service, finds no matching
+   hash, and answers 410. The test would fail, and it would fail looking
+   exactly like the cutover having broken the outstanding-link guarantee it
+   was written to prove. The backfill upserts by id, so a re-run is safe and
+   converges; run it as late as possible before the flip, and remember this
+   applies to every invitation a customer creates in that window, not just
+   the test one.
+3. **`invitations-diff`** — must be clean before going further.
+4. **Flip `INVITES_FROM_TENANCY`** (chart-only, fleet-lite `values-prod.yaml`).
+5. **Accept the test invitation.** This is the only proof the outstanding-link
+   guarantee ever gets, since no real live links exist (see above).
+6. **Repoint Postmark's webhook URL** to
+   `https://fleet-tenancy-webhooks.dimo.co/webhooks/postmark`.
+
+On step 6's timing: do it just AFTER the flip, not before. Delivery tracking
+resolves only at the receiver that holds the row, so whichever service is
+SENDING should be the one receiving. Before the flip fleet-lite sends, so
+repointing early means new invitations lose their delivery badges; after the
+flip this service sends, so repointing late costs the same in the other
+direction. The window is what matters, not the order — keep it short. Nothing
+breaks either way: tracking is advisory, both receivers ignore unknown message
+ids silently, and a resend re-establishes tracking on any invitation that
+missed its events.

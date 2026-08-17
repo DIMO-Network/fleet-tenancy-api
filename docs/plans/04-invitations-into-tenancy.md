@@ -133,6 +133,14 @@ Accept writes the membership via `MemberService.Upsert` and marks the row in
 one transaction — unlike fleet-lite's two-step, which #126's retry semantics
 papered over.
 
+> **Ordering correction found 2026-08-17, before the flip.** The obvious
+> sequence — send a test invitation, flip, accept — is WRONG. With the flag
+> off, fleet-lite writes new invitations only to its own table, so the test
+> invitation does not exist in this service and the post-flip accept answers
+> 410. `backfill-invitations` must be re-run between sending and flipping (it
+> upserts by id, so re-running is safe), and that applies to every invitation
+> created in the window, not just the test one. See HANDOFF's numbered list.
+
 **P2 — backfill + fleet-lite cutover.** An id-preserving `backfill-invitations`
 command (this repo, in-cluster job, source DSN read-only — the P3-groups
 manifest pattern). Then fleet-lite behind `INVITES_FROM_TENANCY`: gateway
