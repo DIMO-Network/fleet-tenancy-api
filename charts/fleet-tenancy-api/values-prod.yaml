@@ -18,6 +18,7 @@ env:
   LOG_LEVEL: info
   SERVICE_NAME: fleet-tenancy-api
   API_PORT: '8084'
+  WEBHOOK_PORT: '8087'
   MONITORING_PORT: '8085'
   DB_PORT: '5432'
   DB_NAME: fleet_tenancy_api
@@ -34,6 +35,33 @@ env:
   INVITE_EXPIRY_HOURS: '168'
   INVITE_ACCEPT_URL_BASE: https://fleets.dimo.co
   CHAIN_ID: '137'
+ingress:
+  # ENABLED 2026-08-16. This publishes POST /webhooks/postmark to the internet
+  # (through Cloudflare) and, via external-dns, owns the DNS record for the
+  # host below. It is the ONLY public entry point to this service.
+  #
+  # It routes to the `webhook` port, which is a separate Fiber app holding only
+  # that one route and a health probe — so /v1 is unreachable from here by
+  # construction, not by the correctness of the rules below.
+  #
+  # Postmark's webhook URL is Postmark-side config, not a deploy. Repointing it
+  # is the remaining step; both receivers tolerate unknown message ids
+  # silently, so fleet-lite's can stay live across the change.
+  enabled: true
+  className: nginx
+  annotations:
+    # Same origin-CA client-cert gate the sibling charts use: the origin
+    # accepts only connections from Cloudflare.
+    nginx.ingress.kubernetes.io/auth-tls-secret: ingress/cf-origin-ca
+    nginx.ingress.kubernetes.io/auth-tls-verify-client: 'on'
+    external-dns.alpha.kubernetes.io/hostname: fleet-tenancy-webhooks.dimo.co
+  hosts:
+    - host: fleet-tenancy-webhooks.dimo.co
+      paths:
+        # Explicit and exact: nothing else on this listener is published.
+        - path: /webhooks/postmark
+          pathType: Exact
+  tls: []
 service:
   type: ClusterIP
   ports:
@@ -41,9 +69,20 @@ service:
       port: 8084
       targetPort: http
       protocol: TCP
+    webhook:
+      port: 8087
+      targetPort: webhook
+      protocol: TCP
 ports:
   - name: http
     containerPort: 8084
+    protocol: TCP
+  # The public webhook listener — a SEPARATE Fiber app that serves only
+  # POST /webhooks/postmark (see internal/app/webhook_app.go). The ingress
+  # targets this port and nothing else, so /v1 stays unreachable from the
+  # internet even if an ingress rule is later widened by mistake.
+  - name: webhook
+    containerPort: 8087
     protocol: TCP
 resources:
   requests:

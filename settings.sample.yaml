@@ -4,6 +4,10 @@ SERVICE_NAME: fleet-tenancy-api
 
 API_PORT: 3010
 MONITORING_PORT: 8086
+# The public webhook listener — a separate Fiber app serving only
+# POST /webhooks/postmark, so the chart's ingress can target it without
+# exposing /v1. See internal/app/webhook_app.go.
+WEBHOOK_PORT: 8087
 
 DB:
   USER: dimo

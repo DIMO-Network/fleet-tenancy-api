@@ -1,0 +1,56 @@
+{{- if .Values.ingress.enabled -}}
+{{- $fullName := include "fleet-tenancy-api.fullname" . -}}
+# The ONLY public entry point to this service.
+#
+# It exists for exactly one caller — Postmark, posting invitation delivery,
+# open and bounce events — and it deliberately targets the `webhook` port,
+# which is served by a separate Fiber app holding only POST /webhooks/postmark
+# and /health (internal/app/webhook_app.go). The service's real surface (/v1,
+# the token minter, provisioning) listens on `http` and is NOT routed here.
+#
+# Two rules for anyone editing this file:
+#
+#   1. The backend port stays `webhook`. Pointing it at `http` would publish
+#      the whole authenticated API to the internet in one line.
+#   2. Paths stay explicit. The path list below is the contract; a `/` rule
+#      would still only reach the webhook listener (that is the point of the
+#      port split), but it would also expose its /health probe publicly for
+#      no reason.
+#
+# Postmark itself authenticates with basic auth against POSTMARK_WEBHOOK_SECRET
+# inside the handler — the ingress is not an authorization boundary.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fleet-tenancy-api.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  name: webhook
+          {{- end }}
+    {{- end }}
+{{- end }}
