@@ -1,0 +1,54 @@
+{{- if .Values.ingress.enabled -}}
+# Linkerd authorization for the public webhook port.
+#
+# The prod namespace sets config.linkerd.io/default-inbound-policy: deny, so
+# every port is refused unless a Server + ServerAuthorization admits it. The
+# cluster's shared policies are keyed by PORT NAME — namespace-wide Servers
+# named http-port, https-port, grpc-port and metrics-port select every pod and
+# match the port names `http`, `https`, `grpc` and `mon-http`.
+#
+# Our webhook port is deliberately named `webhook` (a pod cannot have two ports
+# named `http`), so it matches none of them and was denied by default. That is
+# how it presented in production: the ingress admitted the request, DNS and TLS
+# were fine, and the proxy answered 403 with
+#
+#   l5d-proxy-error: server: <pod-ip>:8087: unauthorized request on route
+#
+# — an empty-bodied 403 that looks like the handler rejecting credentials but
+# never reaches the handler at all. Anyone adding another non-standard port to
+# this chart needs a pair like this one, or it will fail exactly the same way.
+#
+# The authorization is deliberately TIGHTER than the shared http-port-access,
+# which also admits every prod workload and the default service account. This
+# port exists solely for Postmark arriving through the ingress controller, so
+# only the ingress controller's identity is admitted. Nothing in-cluster has
+# any business calling it.
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  name: {{ include "fleet-tenancy-api.fullname" . }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fleet-tenancy-api.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "fleet-tenancy-api.selectorLabels" . | nindent 6 }}
+  port: webhook
+  proxyProtocol: HTTP/1
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: ServerAuthorization
+metadata:
+  name: {{ include "fleet-tenancy-api.fullname" . }}-webhook-access
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fleet-tenancy-api.labels" . | nindent 4 }}
+spec:
+  server:
+    name: {{ include "fleet-tenancy-api.fullname" . }}-webhook
+  client:
+    meshTLS:
+      identities:
+        {{- toYaml .Values.ingress.linkerdClientIdentities | nindent 8 }}
+{{- end }}

@@ -43,6 +43,12 @@ env:
 ingress:
   enabled: false
   className: nginx
+  # Linkerd identities allowed to reach the `webhook` port. The namespace
+  # defaults to deny, and the cluster's shared Servers only cover the port
+  # names http/https/grpc/mon-http — see templates/linkerd-policy.yaml. Only
+  # the ingress controller is admitted: nothing in-cluster should call this.
+  linkerdClientIdentities:
+    - ingress-ingress-nginx.ingress.serviceaccount.identity.linkerd.cluster.local
   annotations:
     nginx.ingress.kubernetes.io/auth-tls-secret: ingress/cf-origin-ca
     nginx.ingress.kubernetes.io/auth-tls-verify-client: 'on'
