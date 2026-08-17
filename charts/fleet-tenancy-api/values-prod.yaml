@@ -36,21 +36,18 @@ env:
   INVITE_ACCEPT_URL_BASE: https://fleets.dimo.co
   CHAIN_ID: '137'
 ingress:
-  # DISABLED until the hostname is agreed and DNS exists. Enabling this
-  # publishes POST /webhooks/postmark to the internet (via Cloudflare) and,
-  # with external-dns, CREATES THE DNS RECORD — so it is a deliberate, separate
-  # change, not something to flip alongside a code deploy.
+  # ENABLED 2026-08-16. This publishes POST /webhooks/postmark to the internet
+  # (through Cloudflare) and, via external-dns, owns the DNS record for the
+  # host below. It is the ONLY public entry point to this service.
   #
-  # Before enabling:
-  #   1. Agree the hostname and confirm it is proxied by Cloudflare, since the
-  #      auth-tls annotations below refuse anything not bearing Cloudflare's
-  #      origin certificate. Postmark reaches the origin THROUGH Cloudflare.
-  #   2. Deploy with it enabled and verify the path answers 403 to an
-  #      unauthenticated POST (the handler's own credential check).
-  #   3. Only then repoint Postmark's webhook URL — that is Postmark-side
-  #      config, not a deploy. Both receivers tolerate unknown message ids
-  #      silently, so fleet-lite's can stay live during the change.
-  enabled: false
+  # It routes to the `webhook` port, which is a separate Fiber app holding only
+  # that one route and a health probe — so /v1 is unreachable from here by
+  # construction, not by the correctness of the rules below.
+  #
+  # Postmark's webhook URL is Postmark-side config, not a deploy. Repointing it
+  # is the remaining step; both receivers tolerate unknown message ids
+  # silently, so fleet-lite's can stay live across the change.
+  enabled: true
   className: nginx
   annotations:
     # Same origin-CA client-cert gate the sibling charts use: the origin
