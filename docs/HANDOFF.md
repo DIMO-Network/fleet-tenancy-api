@@ -1687,6 +1687,44 @@ The two casualties of the old gap were resolved the same day:
    `tenant_users`/`invitations` become read caches and drop, alongside the
    groups-move P5 work already tracked above.
 
+### The webhook ingress, and the Linkerd trap it walked into (2026-08-16)
+
+`POST /webhooks/postmark` is this service's only public surface. It is served
+by a **separate Fiber app on its own port** (`WEBHOOK_PORT`, 8087,
+`internal/app/webhook_app.go`) holding that one route plus `/health`, with the
+chart's ingress targeting that port by name — so `/v1` is unreachable from the
+internet because the process does not serve it there, not because an ingress
+rule says so. A test asserts every internal route 404s on that app. Live at
+`fleet-tenancy-webhooks.dimo.co` (#47, `v0.13.0`).
+
+**It shipped broken, and the way it broke is the part worth keeping.** DNS,
+TLS and routing were all correct; every request still died at the mesh with
+
+```
+HTTP/2 403, content-length: 0
+l5d-proxy-error: server: 10.0.8.201:8087: unauthorized request on route
+```
+
+An **empty-bodied 403 is indistinguishable from the handler correctly refusing
+bad credentials** — which is exactly what this endpoint is supposed to return
+to an unauthenticated caller. Only the missing JSON body and the
+`l5d-proxy-error` header separate "working as designed" from "silently
+dropping every Postmark event". The in-cluster probe passed throughout.
+
+The cause: the prod namespace sets `default-inbound-policy: deny`, and this
+cluster authorizes **by port name** — namespace-wide `Server`s (`http-port`,
+`https-port`, `grpc-port`, `metrics-port`) select every pod and match the port
+names `http`, `https`, `grpc`, `mon-http`. A pod cannot have two ports named
+`http`, so the new one is named `webhook`, matched nothing, and fell through
+to deny. That is also why `/v1` on 8084 never had this problem.
+
+Fixed in #48 with a `Server` + `ServerAuthorization` pair, scoped tighter than
+the shared `http-port-access` (which admits every prod workload): only the
+ingress controller's identity, since nothing in-cluster should call this port.
+
+**Any future non-standard port name in any chart here needs the same pair, or
+it fails identically and misleadingly.**
+
 ### Invitations P2 — backfilled and diffed, flag still OFF (2026-08-16)
 
 | Step | Result |
