@@ -1622,7 +1622,14 @@ The two casualties of the old gap were resolved the same day:
 
 ### What remains of this programme, in priority order
 
-0. **UNRELATED, FOUND 2026-08-16 — fleet-lite's groups cronjobs are failing
+0. **RESOLVED 2026-08-17 — fleet-lite's groups cronjobs recovered on their
+   own.** Both succeeded that morning (`mirror-groups` 06:15, `groups-diff`
+   06:45 — its first recorded success ever) and ArgoCD returned to Healthy.
+   The cause of the earlier failures was never established and the evidence
+   is gone; if it recurs, catch a run in the act rather than inferring from
+   an empty job list. Original write-up kept below.
+
+   **FOUND 2026-08-16 — fleet-lite's groups cronjobs are failing
    and nobody would know.** ArgoCD shows `fleet-lite-app` **Degraded** since
    06:15 UTC (the `mirror-groups` schedule). `mirror-groups` last succeeded
    **2026-08-14**; `groups-diff` has **never** recorded a success since its
@@ -1686,6 +1693,130 @@ The two casualties of the old gap were resolved the same day:
 6. Then the old decommission list (migration-plan Phase 5): local
    `tenant_users`/`invitations` become read caches and drop, alongside the
    groups-move P5 work already tracked above.
+
+### The webhook ingress, and the Linkerd trap it walked into (2026-08-16)
+
+`POST /webhooks/postmark` is this service's only public surface. It is served
+by a **separate Fiber app on its own port** (`WEBHOOK_PORT`, 8087,
+`internal/app/webhook_app.go`) holding that one route plus `/health`, with the
+chart's ingress targeting that port by name — so `/v1` is unreachable from the
+internet because the process does not serve it there, not because an ingress
+rule says so. A test asserts every internal route 404s on that app. Live at
+`fleet-tenancy-webhooks.dimo.co` (#47, `v0.13.0`).
+
+**It shipped broken, and the way it broke is the part worth keeping.** DNS,
+TLS and routing were all correct; every request still died at the mesh with
+
+```
+HTTP/2 403, content-length: 0
+l5d-proxy-error: server: 10.0.8.201:8087: unauthorized request on route
+```
+
+An **empty-bodied 403 is indistinguishable from the handler correctly refusing
+bad credentials** — which is exactly what this endpoint is supposed to return
+to an unauthenticated caller. Only the missing JSON body and the
+`l5d-proxy-error` header separate "working as designed" from "silently
+dropping every Postmark event". The in-cluster probe passed throughout.
+
+The cause: the prod namespace sets `default-inbound-policy: deny`, and this
+cluster authorizes **by port name** — namespace-wide `Server`s (`http-port`,
+`https-port`, `grpc-port`, `metrics-port`) select every pod and match the port
+names `http`, `https`, `grpc`, `mon-http`. A pod cannot have two ports named
+`http`, so the new one is named `webhook`, matched nothing, and fell through
+to deny. That is also why `/v1` on 8084 never had this problem.
+
+Fixed in #48 with a `Server` + `ServerAuthorization` pair, scoped tighter than
+the shared `http-port-access` (which admits every prod workload): only the
+ingress controller's identity, since nothing in-cluster should call this port.
+
+**Any future non-standard port name in any chart here needs the same pair, or
+it fails identically and misleadingly.**
+
+**Verified end to end from the public internet, 2026-08-17:**
+
+| Request to `fleet-tenancy-webhooks.dimo.co` | Result |
+|---|---|
+| `POST /webhooks/postmark`, no credentials | 403 `{"code":403,"message":"invalid webhook credentials"}` — our handler, JSON body, no `l5d-proxy-error` |
+| `POST /webhooks/postmark`, wrong password | 403 |
+| `POST /webhooks/postmark`, real secret, unknown message id | **200 `{"ok":true}`** — the delivery path works |
+| `GET /v1/authz`, `/version`, `/health` | nginx's HTML 404 — never routed, never reached the pod |
+
+The authenticated probe used an unknown message id, which the handler ignores
+by design: the 14 invitation rows were unchanged and none carried the probe id
+afterwards. Rejections log at **warn**, so a scanner hitting this endpoint
+cannot feed error-rate alerting.
+
+**Postmark's webhook URL still points at fleet-lite.** Repointing it to
+`https://fleet-tenancy-webhooks.dimo.co/webhooks/postmark` is Postmark-side
+config and the last step of P2; both receivers tolerate unknown message ids
+silently, so it needs no coordination with the flag flip.
+
+### Invitations P2 — backfilled and diffed, flag still OFF (2026-08-16)
+
+| Step | Result |
+|---|---|
+| `backfill-invitations -dry-run` | 14 source invitations (3 pending, 7 accepted, 4 revoked), 0 already here, `pending_and_unexpired=0` |
+| `backfill-invitations` (real) | **14 written**, counter reconciled against the source count |
+| Cross-database fingerprint | `md5(id||token_hash||status||epoch(expires_at))` over all rows, computed independently on each side: **`0aa609d94f2e4ac2c412bd87c49b1c19`, 14 rows, identical** |
+| fleet-lite `invitations-diff` | 6 tenants, 14 invitations, **14 agree, differ=0, missing_remote=0** |
+
+The fingerprint is the check worth repeating if this is ever re-run: it proves
+the fields that decide whether an emailed link resolves — id, token hash,
+status, expiry — match exactly, which neither the row counts nor the diff can
+show (the diff cannot see the hash, by design).
+
+**No live accept links exist in production right now.** All three pending
+invitations expired, the newest on 2026-08-07. The outstanding-link guarantee
+therefore has nothing to protect today, and real data will never exercise it —
+the deliberate before/after test is the only proof there will ever be. Do not
+skip it because the flip now looks safe.
+
+### INVITATIONS CUTOVER COMPLETE — 2026-08-17
+
+`INVITES_FROM_TENANCY` is **on** in prod (fleet-lite #129). This service now
+mints every invitation token, sends every invitation email, receives the
+delivery webhooks, and writes the membership at accept. fleet-lite's local
+`invitations` table is inert and drops in P4.
+
+**The outstanding-link guarantee is proven, not assumed.** An invitation was
+created in fleet-lite before the flip, backfilled, and accepted after it:
+
+| Check | Result |
+|---|---|
+| `sha256(token from the email)` vs stored hash | identical in BOTH databases, verified before flipping |
+| `POST /invitations/accept` after the flip | 200, resolved to the right tenant |
+| Membership written | `role=member`, `permissions=[]`, scope as invited |
+| `accepted_at` vs membership `created_at` | **identical to the microsecond** — the single-transaction write, visible in the data |
+| fleet-lite's local row | untouched, still `pending` — correctly inert |
+
+A second invitation was then created through this service and accepted by a
+real user through fleets.dimo.co with a passkey — the whole post-flip path,
+including `scopeGroupIds: []` landing as `{}` rather than NULL.
+
+**Two things the plan got wrong, both found by testing rather than reading:**
+
+1. **The two apps use DIFFERENT Postmark servers.** The plan assumed the
+   template aliases were shared server-side assets and only the config moved.
+   Ours held only `fleet-access-granted`, so with the flag on every invitation
+   send would have failed template lookup — recorded, `emailSent=false`, no
+   email. Caught minutes after the flip with zero invitations created in the
+   window. Templates ported and now in-repo (#49).
+   **Consequence: there is no webhook "repoint" and no coordination window.**
+   fleet-lite's Postmark server keeps its own webhook for its inert history;
+   this service's server got its own, pointing at the ingress.
+
+2. **A webhook configured after a send loses that send's events.** Postmark
+   fired Delivered and Opened one second after the test send and had nowhere
+   to POST them. Not a bug — but configure the webhook BEFORE the first send
+   in any new environment. Replaying a real event afterwards upgraded the row
+   `sent → delivered`, which is what proves the receiver end to end.
+
+**What remains:** P3 (the console — kaufmann proxies, b2b BFF, the Invitations
+section on the customer detail Users tab: the payoff feature, and it needs
+nothing from fleet-lite) and P4 (drop fleet-lite's table, service, webhook
+route, its Postmark webhook secret, and the flag). `invitations-diff` still
+runs, but post-flip its value is only confirming the backfilled rows still
+agree — new invitations exist solely here and count as `remote-extra`.
 
 ### The webhook ingress, and the Linkerd trap it walked into (2026-08-16)
 
