@@ -1973,12 +1973,21 @@ for an unrelated reason will hit this; it deserves its own fix.
 - **Postmark-side**: fleet-lite's own Postmark server and its webhook can be
   retired once its delivery history stops mattering. Remember there is no
   "repoint" — the two apps always had separate servers.
-- **Not verified in-cluster.** The git side of every deploy today was checked
-  (both `values-prod.yaml` files, and fleet-lite's). Nothing confirmed ArgoCD
-  synced or the pods rolled. For fleet-lite that matters more than usual: the
-  drop runs in the migrate init container, so a failure means the pod never
-  starts. `kubectl -n prod logs deploy/fleet-lite-app -c fleet-lite-app-migrate`
-  is the first place to look, not the app logs.
+- ~~Not verified in-cluster~~ — **verified 2026-08-17 20:20 UTC.** All three of
+  the day's releases are live with 2/2 pods and zero restarts: fleet-lite
+  `f8cab9a` (`v0.14.0`), kaufmann `1.51.0` (`v1.51.0`), fleet-onboard-app
+  `0f8eedc` (`v1.10.0` — the deployment is `fleet-onboard-app-prod`, not
+  `fleet-onboard-app`). **The drop ran**: fleet-lite's migrate init container
+  reports `current version: 20260817180000`, and the second pod correctly found
+  nothing to do. Error streams since the rollout: fleet-lite 0, this service 0,
+  kaufmann 2 — both the pre-existing benign SACD token-exchange 403s under
+  `0xCa977Abb…`, unrelated to any of this.
+
+  Worth keeping for next time: the drop runs in the migrate init container, so a
+  failure means the pod never starts and
+  `kubectl -n prod logs <pod> -c fleet-lite-app-migrate` is the first place to
+  look, not the app logs. Note kaufmann's app image is the *second* container
+  (`tls-offload` is first), so `containers[0].image` reports ghostunnel.
 - **The P3 console verification never ran** — send an invitation from a
   customer's Users tab, confirm "sent by you" and the Delivery column, and that
   the invitee can accept in fleet-lite. P4 shipped ahead of it, which is out of
