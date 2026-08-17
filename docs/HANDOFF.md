@@ -1725,6 +1725,25 @@ ingress controller's identity, since nothing in-cluster should call this port.
 **Any future non-standard port name in any chart here needs the same pair, or
 it fails identically and misleadingly.**
 
+**Verified end to end from the public internet, 2026-08-17:**
+
+| Request to `fleet-tenancy-webhooks.dimo.co` | Result |
+|---|---|
+| `POST /webhooks/postmark`, no credentials | 403 `{"code":403,"message":"invalid webhook credentials"}` — our handler, JSON body, no `l5d-proxy-error` |
+| `POST /webhooks/postmark`, wrong password | 403 |
+| `POST /webhooks/postmark`, real secret, unknown message id | **200 `{"ok":true}`** — the delivery path works |
+| `GET /v1/authz`, `/version`, `/health` | nginx's HTML 404 — never routed, never reached the pod |
+
+The authenticated probe used an unknown message id, which the handler ignores
+by design: the 14 invitation rows were unchanged and none carried the probe id
+afterwards. Rejections log at **warn**, so a scanner hitting this endpoint
+cannot feed error-rate alerting.
+
+**Postmark's webhook URL still points at fleet-lite.** Repointing it to
+`https://fleet-tenancy-webhooks.dimo.co/webhooks/postmark` is Postmark-side
+config and the last step of P2; both receivers tolerate unknown message ids
+silently, so it needs no coordination with the flag flip.
+
 ### Invitations P2 — backfilled and diffed, flag still OFF (2026-08-16)
 
 | Step | Result |
