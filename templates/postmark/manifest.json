@@ -6,6 +6,20 @@
       "subject": "You now have access to {{tenant_name}} on DIMO Fleet",
       "htmlFile": "access-granted.html",
       "textFile": "access-granted.txt"
+    },
+    {
+      "alias": "fleet-invitation",
+      "name": "Fleet Tenancy — Member Invitation",
+      "subject": "You've been invited to {{tenant_name}} on DIMO Fleet",
+      "htmlFile": "invitation.html",
+      "textFile": "invitation.txt"
+    },
+    {
+      "alias": "fleet-invitation-es",
+      "name": "Fleet Tenancy — Member Invitation (Spanish)",
+      "subject": "Te han invitado a {{tenant_name}} en DIMO Fleet",
+      "htmlFile": "invitation.es.html",
+      "textFile": "invitation.es.txt"
     }
   ]
 }
