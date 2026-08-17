@@ -2,7 +2,7 @@ replicaCount: 1
 image:
   repository: dimozone/fleet-tenancy-api
   pullPolicy: IfNotPresent
-  tag: 431be35
+  tag: a7e0d06
 imagePullSecrets: []
 nameOverride: ''
 fullnameOverride: ''
@@ -43,10 +43,6 @@ env:
 ingress:
   enabled: false
   className: nginx
-  # Linkerd identities allowed to reach the `webhook` port. The namespace
-  # defaults to deny, and the cluster's shared Servers only cover the port
-  # names http/https/grpc/mon-http — see templates/linkerd-policy.yaml. Only
-  # the ingress controller is admitted: nothing in-cluster should call this.
   linkerdClientIdentities:
     - ingress-ingress-nginx.ingress.serviceaccount.identity.linkerd.cluster.local
   annotations:
