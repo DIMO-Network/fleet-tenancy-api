@@ -1919,3 +1919,69 @@ the rest — a TLS handshake timeout on tag-ref creation, where the write may or
 may not have landed. The clean 503s could be retried blindly; that one had to be
 checked first (`gh api repos/<owner>/<repo>/git/ref/tags/vX.Y.Z`) to avoid a
 duplicate or confusing tag in a deploy-on-tag repo. It had not landed.
+
+### Invitations P4 — DECOMMISSIONED 2026-08-17
+
+fleet-lite no longer has an invitation implementation. Everything that made it
+a second home for invitation records is gone, and this service is the only one.
+
+| Repo | PRs | Released as |
+|---|---|---|
+| fleet-lite | #130 code + flag + Postmark, #131 the table drop | `v0.14.0` — `values-prod.yaml` verified repinned to `f8cab9a` |
+
+**Shipped as two PRs on purpose.** #130 is reversible — it deletes the local
+path, `INVITES_FROM_TENANCY` and its branching, the `/webhooks/postmark`
+receiver, `invitations-diff`, and six settings with their chart values and
+secret refs. #131 is not: it drops the table. Keeping them apart meant merging
+the first did not commit anyone to the second, and the irreversible change is
+one revert away from being isolated in history.
+
+**Postmark left fleet-lite entirely, which the plan's one-liner understated.**
+It named "webhook route, Postmark webhook secret", but Postmark existed in that
+repo *only* for invitations — the only templates were `invitation.*` — so the
+gateway, both CLI commands (`push-postmark-templates`,
+`configure-postmark-webhook`) and the server token went too. Removing just the
+webhook would have stranded all of it wired to nothing.
+
+**The drop's down migration restores shape, not rows.** That is the honest
+recovery story: the rows are here, backfilled by id with a matching
+cross-database fingerprint before the flip. Worth repeating if this is ever
+re-derived — the down migration was WRONG on first writing, and the way it was
+caught generalises: build a reference database from the original migrations,
+roll the new one forward and back, and diff the two schemas. That surfaced a
+missing `ON UPDATE CASCADE`, added to the foreign key by
+`20260805170000_unify_kaufmann_tenant_uuid` so a re-keyed tenant uuid carries.
+A rollback would have restored a table whose FK silently blocks the very re-key
+that migration exists to allow — invisible to any test, and to review.
+
+**`make sqlboiler` in fleet-lite does not reproduce its committed models.** The
+shared where-helpers `whereHelpernull_String` and `whereHelpernull_Time` both
+lived in the generated `invitations.go`; regeneration relocated the first and
+dropped the second, leaving three files using a type nothing defines. This is
+not drift caused by the schema change — a control run against the *pre-drop*
+schema also fails to emit it while the committed file defines it. The helper was
+moved by hand to keep the package compiling. Anyone regenerating those models
+for an unrelated reason will hit this; it deserves its own fix.
+
+### Still outstanding after P4
+
+- **The two AWS secrets still exist**: `prod/fleet-lite-app/postmark_server_token`
+  and `prod/fleet-lite-app/postmark_webhook_secret`. The chart no longer
+  references them, so they are inert — delete them only once the chart without
+  those `remoteRef`s is confirmed running, never before. A missing ref fails the
+  whole ExternalSecret and takes the DB credentials with it.
+- **Postmark-side**: fleet-lite's own Postmark server and its webhook can be
+  retired once its delivery history stops mattering. Remember there is no
+  "repoint" — the two apps always had separate servers.
+- **Not verified in-cluster.** The git side of every deploy today was checked
+  (both `values-prod.yaml` files, and fleet-lite's). Nothing confirmed ArgoCD
+  synced or the pods rolled. For fleet-lite that matters more than usual: the
+  drop runs in the migrate init container, so a failure means the pod never
+  starts. `kubectl -n prod logs deploy/fleet-lite-app -c fleet-lite-app-migrate`
+  is the first place to look, not the app logs.
+- **The P3 console verification never ran** — send an invitation from a
+  customer's Users tab, confirm "sent by you" and the Delivery column, and that
+  the invitee can accept in fleet-lite. P4 shipped ahead of it, which is out of
+  order against the plan's own gate ("after a soak with the flag on and the diff
+  clean"); the flag flipped the same day. Nothing has exercised the console send
+  path end to end.
