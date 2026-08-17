@@ -1751,6 +1751,10 @@ cannot feed error-rate alerting.
 config and the last step of P2; both receivers tolerate unknown message ids
 silently, so it needs no coordination with the flag flip.
 
+> **Superseded 2026-08-17 — there is no repoint.** The two apps use *different*
+> Postmark servers, so each has its own webhook and fleet-lite's keeps pointing
+> at fleet-lite for its own inert history. See the cutover section below.
+
 ### Invitations P2 — backfilled and diffed, flag still OFF (2026-08-16)
 
 | Step | Result |
@@ -1770,6 +1774,40 @@ invitations expired, the newest on 2026-08-07. The outstanding-link guarantee
 therefore has nothing to protect today, and real data will never exercise it —
 the deliberate before/after test is the only proof there will ever be. Do not
 skip it because the flip now looks safe.
+
+**The sequence this section prescribed — ALL DONE 2026-08-17.** Kept because
+the reasoning behind step 2 is the part worth re-reading if this is ever run
+in another environment. The cutover it led to is recorded below.
+
+1. **Send a test invitation** from fleet-lite while the flag is still off.
+2. **RE-RUN `backfill-invitations`.** With the flag off, fleet-lite writes new
+   invitations to its OWN table only, so anything created after the first
+   backfill — the test invitation included — does not exist here. After the
+   flip, `Accept` resolves the token against THIS service, finds no matching
+   hash, and answers 410. The test would fail, and it would fail looking
+   exactly like the cutover having broken the outstanding-link guarantee it
+   was written to prove. The backfill upserts by id, so a re-run is safe and
+   converges; run it as late as possible before the flip, and remember this
+   applies to every invitation a customer creates in that window, not just
+   the test one.
+3. **`invitations-diff`** — must be clean before going further.
+4. **Flip `INVITES_FROM_TENANCY`** (chart-only, fleet-lite `values-prod.yaml`).
+5. **Accept the test invitation.** This is the only proof the outstanding-link
+   guarantee ever gets, since no real live links exist (see above).
+6. ~~**Repoint Postmark's webhook URL**~~ — **void, never done and never will
+   be.** The premise was wrong: the two apps use different Postmark servers, so
+   there is nothing to repoint and no coordination window. Step 6's reasoning is
+   kept below only because the delivery-tracking principle in it still holds.
+
+On step 6's timing: do it just AFTER the flip, not before. Delivery tracking
+resolves only at the receiver that holds the row, so whichever service is
+SENDING should be the one receiving. Before the flip fleet-lite sends, so
+repointing early means new invitations lose their delivery badges; after the
+flip this service sends, so repointing late costs the same in the other
+direction. The window is what matters, not the order — keep it short. Nothing
+breaks either way: tracking is advisory, both receivers ignore unknown message
+ids silently, and a resend re-establishes tracking on any invitation that
+missed its events.
 
 ### INVITATIONS CUTOVER COMPLETE — 2026-08-17
 
@@ -1811,116 +1849,73 @@ including `scopeGroupIds: []` landing as `{}` rather than NULL.
    in any new environment. Replaying a real event afterwards upgraded the row
    `sent → delivered`, which is what proves the receiver end to end.
 
-**What remains:** P3 (the console — kaufmann proxies, b2b BFF, the Invitations
-section on the customer detail Users tab: the payoff feature, and it needs
-nothing from fleet-lite) and P4 (drop fleet-lite's table, service, webhook
-route, its Postmark webhook secret, and the flag). `invitations-diff` still
-runs, but post-flip its value is only confirming the backfilled rows still
-agree — new invitations exist solely here and count as `remote-extra`.
+**What remains:** P4 (drop fleet-lite's table, service, webhook route, its
+Postmark webhook secret, and the flag). P3 — the console — shipped later the
+same day; see the section below. `invitations-diff` still runs, but post-flip
+its value is only confirming the backfilled rows still agree — new invitations
+exist solely here and count as `remote-extra`.
 
-### The webhook ingress, and the Linkerd trap it walked into (2026-08-16)
+### Invitations P3 — MERGED AND RELEASED 2026-08-17
 
-`POST /webhooks/postmark` is this service's only public surface. It is served
-by a **separate Fiber app on its own port** (`WEBHOOK_PORT`, 8087,
-`internal/app/webhook_app.go`) holding that one route plus `/health`, with the
-chart's ingress targeting that port by name — so `/v1` is unreachable from the
-internet because the process does not serve it there, not because an ingress
-rule says so. A test asserts every internal route 404s on that app. Live at
-`fleet-tenancy-webhooks.dimo.co` (#47, `v0.13.0`).
+The operator console can now invite a customer's users by email. It could
+already **provision** a person — creating a DIMO account and wallet on their
+behalf — but not invite one, because the invitation records lived in fleet-lite
+where kaufmann cannot reach them. D4 keeps both paths deliberately: invitation
+is the one for when creating an account for somebody would be presumptuous,
+which is most of the time for a customer's own staff.
 
-**It shipped broken, and the way it broke is the part worth keeping.** DNS,
-TLS and routing were all correct; every request still died at the mesh with
+| Repo | PRs | Released as |
+|---|---|---|
+| kaufmann | #216 chart drift fix, #215 invitation proxies | `v1.51.0` — `values-prod.yaml` verified repinned to `1.51.0` |
+| b2b | #183 console UI | `v1.10.0` — `values-prod.yaml` verified repinned to `0f8eedc` (a short SHA, not a version — see below) |
 
-```
-HTTP/2 403, content-length: 0
-l5d-proxy-error: server: 10.0.8.201:8087: unauthorized request on route
-```
+Nothing was needed in this service: the records and the email dispatch have
+lived here since P2. kaufmann's four handlers authorize, forward and translate,
+gated on `manage_members`, with `invitedByWallet` folded in from the
+authenticated user rather than the request body — so the audit trail and the
+email's "invited by" line record who really sent it.
 
-An **empty-bodied 403 is indistinguishable from the handler correctly refusing
-bad credentials** — which is exactly what this endpoint is supposed to return
-to an unauthenticated caller. Only the missing JSON body and the
-`l5d-proxy-error` header separate "working as designed" from "silently
-dropping every Postmark event". The in-cluster probe passed throughout.
+**Still to verify in the console**, not done at time of writing: open a
+customer's Users tab, send an invitation, confirm it renders with "sent by you"
+and a Delivery column, and that the invitee can accept in fleet-lite. That is
+the first exercise of the post-flip send path through the console rather than
+through fleet-lite.
 
-The cause: the prod namespace sets `default-inbound-policy: deny`, and this
-cluster authorizes **by port name** — namespace-wide `Server`s (`http-port`,
-`https-port`, `grpc-port`, `metrics-port`) select every pod and match the port
-names `http`, `https`, `grpc`, `mon-http`. A pod cannot have two ports named
-`http`, so the new one is named `webhook`, matched nothing, and fell through
-to deny. That is also why `/v1` on 8084 never had this problem.
+#### Two release mechanics worth not rediscovering
 
-Fixed in #48 with a `Server` + `ServerAuthorization` pair, scoped tighter than
-the shared `http-port-access` (which admits every prod workload): only the
-ingress controller's identity, since nothing in-cluster should call this port.
+**The two repos pin prod differently.** kaufmann's tagged build uses
+`strip_v: true` and writes the *version* into `values-prod.yaml` (`1.51.0`);
+b2b's computes `BUILD_TAG` as the short commit SHA and writes *that*
+(`0f8eedc`), so a b2b version number never appears in its chart at all — the
+tag only triggers the build. Seeing a SHA in b2b's `values-prod.yaml` is
+correct, not a failed release. b2b also has no dev environment (the workflow
+says so: Login-with-DIMO makes one impossible), so its tagged build goes
+straight to prod.
 
-**Any future non-standard port name in any chart here needs the same pair, or
-it fails identically and misleadingly.**
+**Read the tags, never the prose, before cutting a release.** An earlier draft
+of this file was stale on both repos. b2b in particular left the 1.6.x line
+entirely — 1.6.17 → 1.7.0 → 1.8.0 → 1.9.0 → 1.10.0 — so guessing "v1.6.18" from
+a stale note would cut a tag sorting below four existing releases. Use
+`git tag --sort=-v:refname | head -3`. Both repos use **annotated** tags.
 
-**Verified end to end from the public internet, 2026-08-17:**
+#### The image-version step is the single point where a release half-lands
 
-| Request to `fleet-tenancy-webhooks.dimo.co` | Result |
-|---|---|
-| `POST /webhooks/postmark`, no credentials | 403 `{"code":403,"message":"invalid webhook credentials"}` — our handler, JSON body, no `l5d-proxy-error` |
-| `POST /webhooks/postmark`, wrong password | 403 |
-| `POST /webhooks/postmark`, real secret, unknown message id | **200 `{"ok":true}`** — the delivery path works |
-| `GET /v1/authz`, `/version`, `/health` | nginx's HTML 404 — never routed, never reached the pod |
+Both repos' build workflows end with the same `yaml-update-action` step, and it
+is the only thing that moves an environment — the image push before it is inert
+on its own. During the GitHub incident of 2026-08-17 that step failed alone,
+repeatedly, on both repos, while every step before it succeeded. Two
+consequences, both of which cost time here:
 
-The authenticated probe used an unknown message id, which the handler ignores
-by design: the 14 invitation rows were unchanged and none carried the probe id
-afterwards. Rejections log at **warn**, so a scanner hitting this endpoint
-cannot feed error-rate alerting.
+- **A red build does not mean a missing image.** Both post-merge dev builds
+  showed `failure` with the image already pushed to DockerHub; only the chart
+  commit was lost. Re-running with `gh run rerun <id> --failed` re-ran just that
+  step. It also means dev silently ran two merges behind for several hours.
+- **A green build is not proof prod moved.** The check that matters is the file:
+  `values-prod.yaml` for a tagged build, `values.yaml` for a dev one. Verify the
+  content, not the run's conclusion.
 
-**Postmark's webhook URL still points at fleet-lite.** Repointing it to
-`https://fleet-tenancy-webhooks.dimo.co/webhooks/postmark` is Postmark-side
-config and the last step of P2; both receivers tolerate unknown message ids
-silently, so it needs no coordination with the flag flip.
-
-### Invitations P2 — backfilled and diffed, flag still OFF (2026-08-16)
-
-| Step | Result |
-|---|---|
-| `backfill-invitations -dry-run` | 14 source invitations (3 pending, 7 accepted, 4 revoked), 0 already here, `pending_and_unexpired=0` |
-| `backfill-invitations` (real) | **14 written**, counter reconciled against the source count |
-| Cross-database fingerprint | `md5(id||token_hash||status||epoch(expires_at))` over all rows, computed independently on each side: **`0aa609d94f2e4ac2c412bd87c49b1c19`, 14 rows, identical** |
-| fleet-lite `invitations-diff` | 6 tenants, 14 invitations, **14 agree, differ=0, missing_remote=0** |
-
-The fingerprint is the check worth repeating if this is ever re-run: it proves
-the fields that decide whether an emailed link resolves — id, token hash,
-status, expiry — match exactly, which neither the row counts nor the diff can
-show (the diff cannot see the hash, by design).
-
-**No live accept links exist in production right now.** All three pending
-invitations expired, the newest on 2026-08-07. The outstanding-link guarantee
-therefore has nothing to protect today, and real data will never exercise it —
-the deliberate before/after test is the only proof there will ever be. Do not
-skip it because the flip now looks safe.
-
-**Still to do, in this order — and the second step is not optional:**
-
-1. **Send a test invitation** from fleet-lite while the flag is still off.
-2. **RE-RUN `backfill-invitations`.** With the flag off, fleet-lite writes new
-   invitations to its OWN table only, so anything created after the first
-   backfill — the test invitation included — does not exist here. After the
-   flip, `Accept` resolves the token against THIS service, finds no matching
-   hash, and answers 410. The test would fail, and it would fail looking
-   exactly like the cutover having broken the outstanding-link guarantee it
-   was written to prove. The backfill upserts by id, so a re-run is safe and
-   converges; run it as late as possible before the flip, and remember this
-   applies to every invitation a customer creates in that window, not just
-   the test one.
-3. **`invitations-diff`** — must be clean before going further.
-4. **Flip `INVITES_FROM_TENANCY`** (chart-only, fleet-lite `values-prod.yaml`).
-5. **Accept the test invitation.** This is the only proof the outstanding-link
-   guarantee ever gets, since no real live links exist (see above).
-6. **Repoint Postmark's webhook URL** to
-   `https://fleet-tenancy-webhooks.dimo.co/webhooks/postmark`.
-
-On step 6's timing: do it just AFTER the flip, not before. Delivery tracking
-resolves only at the receiver that holds the row, so whichever service is
-SENDING should be the one receiving. Before the flip fleet-lite sends, so
-repointing early means new invitations lose their delivery badges; after the
-flip this service sends, so repointing late costs the same in the other
-direction. The window is what matters, not the order — keep it short. Nothing
-breaks either way: tracking is advisory, both receivers ignore unknown message
-ids silently, and a resend re-establishes tracking on any invitation that
-missed its events.
+The same incident produced one ambiguous failure worth handling differently from
+the rest — a TLS handshake timeout on tag-ref creation, where the write may or
+may not have landed. The clean 503s could be retried blindly; that one had to be
+checked first (`gh api repos/<owner>/<repo>/git/ref/tags/vX.Y.Z`) to avoid a
+duplicate or confusing tag in a deploy-on-tag repo. It had not landed.
