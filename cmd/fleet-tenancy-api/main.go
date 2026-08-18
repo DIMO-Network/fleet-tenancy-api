@@ -11,11 +11,14 @@ import (
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/app"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
+	"github.com/DIMO-Network/fleet-tenancy-api/internal/gateway"
+	"github.com/DIMO-Network/fleet-tenancy-api/internal/service"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/sharing"
 	"github.com/DIMO-Network/shared/pkg/db"
 	ssettings "github.com/DIMO-Network/shared/pkg/settings"
 	"github.com/google/subcommands"
 	_ "github.com/lib/pq"
+	"github.com/riverqueue/river"
 	"github.com/rs/zerolog"
 )
 
@@ -94,11 +97,7 @@ func main() {
 	// A queue that cannot be built when it IS configured is fatal, though: that
 	// means the settings are present but wrong, and starting anyway would serve
 	// share requests into a queue nothing drains.
-	//
-	// nil workers: the share worker lands in step 2. River will not start with
-	// an empty bundle, so the queue stays unbuilt until there is something to
-	// run rather than failing startup.
-	shareQueue, qerr := sharing.NewQueue(ctx, &logger, &settings, nil)
+	shareQueue, qerr := sharing.NewQueue(ctx, &logger, &settings, shareWorkers(ctx, &logger, &settings, &pdb))
 	if qerr != nil {
 		logger.Fatal().Err(qerr).Msg("failed to create vehicle-sharing job queue")
 	}
@@ -128,8 +127,44 @@ func main() {
 		}
 	}()
 
-	server := app.App(&settings, &logger, commitHash, &pdb)
+	server := app.App(&settings, &logger, commitHash, &pdb, shareQueue)
 	if lerr := server.Listen(":" + strconv.Itoa(port)); lerr != nil {
 		logger.Fatal().Err(lerr).Msg("server failed")
 	}
+}
+
+// shareWorkers builds the vehicle-sharing worker bundle, or nil when sharing is
+// unconfigured — which is what keeps the queue unbuilt and the service booting
+// normally in environments that have no bundler.
+//
+// The worker's dependencies are constructed here rather than being shared with
+// app.App's, and the duplication is deliberate on two counts. It keeps App's
+// signature to the queue alone; and the worker is the half the plan expects to
+// move into its own deployment if bundler latency ever crowds the API, at which
+// point it will need to build these anyway. The only shared state either copy
+// holds is a cache, and a worker checking authorization against its own fresh
+// cache is the behaviour we want at the moment it spends gas.
+func shareWorkers(ctx context.Context, logger *zerolog.Logger, settings *config.Settings, pdb *db.Store) *river.Workers {
+	if !settings.SharingConfigured() {
+		return nil
+	}
+
+	fleetClient, err := sharing.NewFleetClient(settings)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("sharing is configured but its fleet client could not be built")
+	}
+
+	credSvc := service.NewCredentialService(logger, pdb, settings,
+		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint))
+	signerSvc := service.NewSharedSignerService(logger,
+		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint), credSvc)
+	authorizer := service.NewShareAuthorizer(logger, pdb,
+		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint),
+		signerSvc, credSvc, settings)
+
+	workers := river.NewWorkers()
+	if err := river.AddWorkerSafely(workers, sharing.NewShareWorker(logger, settings, authorizer, fleetClient)); err != nil {
+		logger.Fatal().Err(err).Msg("failed to register the vehicle-share worker")
+	}
+	return workers
 }

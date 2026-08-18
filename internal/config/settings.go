@@ -70,12 +70,16 @@ type Settings struct {
 	// used as the paymaster URL too, matching kaufmann's fleet client — ZeroDev
 	// serves both from one project URL.
 	//
-	// None are boot-required yet. The endpoint that needs them does not exist
-	// until docs/plans/05-vehicle-sharing.md step 2, and this service must keep
-	// booting — an outage here is an outage in both apps. SharingConfigured
-	// reports whether the feature can run; the step-2 PR is what makes an
-	// unset value refuse to boot, once the chart has been syncing the secrets
-	// for a release.
+	// Sharing is optional as a whole: leave all of these unset and the feature
+	// is off, the job queue never starts, and the service boots normally. That
+	// asymmetry is deliberate — this service is what both apps fail closed on,
+	// and a feature neither of them has to use must not be able to stop it
+	// answering /v1/authz.
+	//
+	// What Validate does refuse is a PARTIAL configuration. Half-set, the
+	// feature would look configured to an operator reading the chart and be
+	// silently off to SharingConfigured, or worse, on with an address pointing
+	// at the wrong contract. All or nothing is the only state worth booting.
 	SacdAddress string  `yaml:"SACD_ADDRESS"`
 	RPCURL      url.URL `yaml:"RPC_URL"`     // secret
 	BundlerURL  url.URL `yaml:"BUNDLER_URL"` // secret
@@ -169,6 +173,18 @@ func (s *Settings) Validate() error {
 			"credentials would be encrypted with sha256(\"\"), a publicly known key",
 			s.Environment)
 	}
+	// Vehicle sharing: all of it or none of it. A partial configuration is the
+	// dangerous state — an operator who set SACD_ADDRESS and forgot the bundler
+	// reads the chart as "sharing is on", while SharingConfigured reads it as
+	// off and every share 503s with nothing explaining why.
+	//
+	// Local is exempt for the same reason as everything else here: a developer
+	// running against a local database has no bundler and should not need one.
+	if !s.IsLocal() {
+		if err := s.validateSharing(); err != nil {
+			return err
+		}
+	}
 	// Same reasoning as the encryption key: an unset value here is not "no
 	// gate", it is an open /v1. Refuse to boot rather than serve every tenant's
 	// authorization data to anything that can reach the port.
@@ -183,6 +199,37 @@ func (s *Settings) Validate() error {
 		}
 	}
 	return nil
+}
+
+// validateSharing refuses a half-configured sharing feature.
+//
+// Nothing set at all is fine — the feature is simply off. Anything set means
+// everything must be, including the two that are also needed elsewhere
+// (VEHICLE_NFT_ADDRESS, CHAIN_ID), because a share signed for the wrong chain
+// or aimed at the zero address fails in ways that read as a permissions bug.
+func (s *Settings) validateSharing() error {
+	present := map[string]bool{
+		"SACD_ADDRESS":        s.SacdAddress != "",
+		"RPC_URL":             s.RPCURL.String() != "",
+		"BUNDLER_URL":         s.BundlerURL.String() != "",
+		"VEHICLE_NFT_ADDRESS": s.VehicleNftAddress != "",
+		"CHAIN_ID":            s.ChainID != 0,
+	}
+	missing := []string{}
+	any := false
+	for _, name := range []string{"SACD_ADDRESS", "RPC_URL", "BUNDLER_URL", "VEHICLE_NFT_ADDRESS", "CHAIN_ID"} {
+		if present[name] {
+			any = true
+		} else {
+			missing = append(missing, name)
+		}
+	}
+	if !any || len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("vehicle sharing is partially configured in environment %q: %s missing. "+
+		"Set all of them to enable sharing, or none to leave it off",
+		s.Environment, strings.Join(missing, ", "))
 }
 
 // MinTrustedCallerKeyLength rejects keys short enough to be guessable. 32 chars

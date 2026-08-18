@@ -192,3 +192,63 @@ func mustURL(t *testing.T, raw string) url.URL {
 	require.NoError(t, err)
 	return *u
 }
+
+// Sharing is optional as a whole but must not be half-configured. An operator
+// who sets the SACD address and forgets the bundler reads the chart as
+// "sharing is on" while SharingConfigured reads it as off, and every share
+// 503s with nothing in the config explaining why.
+func TestValidate_RejectsPartialSharingConfiguration(t *testing.T) {
+	base := func() *Settings {
+		return &Settings{
+			Environment:        "prod",
+			TenantSecretEncKey: "a-real-key",
+			TrustedCallerKeys:  "fleet-lite:" + strings.Repeat("k", MinTrustedCallerKeyLength),
+		}
+	}
+	full := func() *Settings {
+		s := base()
+		s.SacdAddress = "0x3c152B5d96769661008Ff404224d6530FCAC766d"
+		s.VehicleNftAddress = "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF"
+		s.RPCURL = mustURL(t, "https://polygon-mainnet.example/v2/key")
+		s.BundlerURL = mustURL(t, "https://rpc.zerodev.example/api/v2/bundler/proj")
+		s.ChainID = 137
+		return s
+	}
+
+	t.Run("nothing set is fine — the feature is simply off", func(t *testing.T) {
+		s := base()
+		require.False(t, s.SharingConfigured())
+		assert.NoError(t, s.Validate())
+	})
+
+	t.Run("everything set is fine", func(t *testing.T) {
+		s := full()
+		require.True(t, s.SharingConfigured())
+		assert.NoError(t, s.Validate())
+	})
+
+	for name, blank := range map[string]func(*Settings){
+		"SACD_ADDRESS":        func(s *Settings) { s.SacdAddress = "" },
+		"RPC_URL":             func(s *Settings) { s.RPCURL = url.URL{} },
+		"BUNDLER_URL":         func(s *Settings) { s.BundlerURL = url.URL{} },
+		"VEHICLE_NFT_ADDRESS": func(s *Settings) { s.VehicleNftAddress = "" },
+		"CHAIN_ID":            func(s *Settings) { s.ChainID = 0 },
+	} {
+		t.Run("missing "+name+" refuses to boot", func(t *testing.T) {
+			s := full()
+			blank(s)
+			err := s.Validate()
+			require.Error(t, err, "a partial sharing config must not boot")
+			assert.Contains(t, err.Error(), name, "the error must name what is missing")
+		})
+	}
+
+	// A developer running against a local database has no bundler and should
+	// not need one to start the service.
+	t.Run("local is exempt", func(t *testing.T) {
+		s := full()
+		s.Environment = "local"
+		s.SacdAddress = ""
+		assert.NoError(t, s.Validate())
+	})
+}

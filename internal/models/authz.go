@@ -30,7 +30,8 @@ const (
 
 	// CapManageVehicles gates acting on a vehicle the caller does not own —
 	// the operations a tenant performs through its own signer on a shared
-	// kernel account: transfer, disconnect and delete.
+	// kernel account: transfer, disconnect, delete, and sharing a vehicle with
+	// another wallet.
 	//
 	// It is deliberately separate from CapOnboardVehicle. Onboarding adds a
 	// vehicle the tenant already controls; these move or destroy an asset that

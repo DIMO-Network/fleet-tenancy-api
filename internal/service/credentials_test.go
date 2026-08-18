@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
+	"github.com/DIMO-Network/fleet-tenancy-api/internal/gateway"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,9 +23,24 @@ const (
 type fakeIdentity struct {
 	uri string
 	err error
+
+	// Vehicle ownership belongs to sharing, not the credential service. Kept
+	// on the same fake so there is one IdentityAPI stand-in.
+	owners    map[int64]string
+	ownersErr error
 }
 
 func (f *fakeIdentity) RedirectURIForClientID(string) (string, error) { return f.uri, f.err }
+func (f *fakeIdentity) VehicleOwner(tokenID int64) (string, error) {
+	if f.ownersErr != nil {
+		return "", f.ownersErr
+	}
+	owner, ok := f.owners[tokenID]
+	if !ok {
+		return "", gateway.ErrVehicleNotFound
+	}
+	return owner, nil
+}
 
 func credService(t *testing.T, settings *config.Settings) (*CredentialService, context.Context) {
 	t.Helper()
