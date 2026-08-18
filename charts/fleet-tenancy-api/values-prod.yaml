@@ -26,6 +26,23 @@ env:
   DB_MAX_IDLE_CONNECTIONS: '6'
   DB_SSL_MODE: require
   JWT_KEY_SET_URL: https://auth.dimo.zone/keys
+  # The DIMO platform services behind the token minter and on-behalf
+  # provisioning. These have been in values.yaml since the chart was written
+  # and were never copied here, so prod has been running with all four unset —
+  # see the PR for what that means for each consumer.
+  #
+  # identity-api is reached in-cluster, matching kaufmann-oracle and
+  # fleet-lite-app's prod charts and this file's own ATTEST_API_URL. The rest
+  # have no in-cluster address and are the same public endpoints both siblings
+  # use in prod.
+  DIMO_AUTH_URL: https://auth.dimo.zone
+  TOKEN_EXCHANGE_URL: https://token-exchange-api.dimo.zone
+  IDENTITY_API_ENDPOINT: http://identity-api-prod.prod.svc.cluster.local:8080/query
+  ACCOUNTS_API_ENDPOINT: https://accounts.dimo.org
+  # The VehicleId NFT contract, used to build the did:erc721 subject of every
+  # group attestation this service publishes. Unset, common.HexToAddress("")
+  # yields the zero address and the DIDs name a contract that does not exist.
+  VEHICLE_NFT_ADDRESS: '0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF'
   ATTEST_API_URL: http://dis-prod-attest.prod.svc.cluster.local:8080
   PROVISION_EMAIL_FROM: no-reply@dimo.co
   POSTMARK_PROVISION_TEMPLATE_ALIAS: fleet-access-granted
