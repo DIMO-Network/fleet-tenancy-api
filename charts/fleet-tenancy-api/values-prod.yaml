@@ -35,9 +35,6 @@ env:
   INVITE_EXPIRY_HOURS: '168'
   INVITE_ACCEPT_URL_BASE: https://fleets.dimo.co
   CHAIN_ID: '137'
-  # Required by vehicle sharing (SharingConfigured); was absent from this
-  # file while values.yaml has carried it since the chart was written.
-  VEHICLE_NFT_ADDRESS: '0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF'
   # On-chain vehicle sharing (docs/plans/05-vehicle-sharing.md). SACD is the
   # DIMO Service Access Control Document contract — a SEPARATE contract from
   # both the registry and the VehicleId NFT above. RPC_URL and BUNDLER_URL
