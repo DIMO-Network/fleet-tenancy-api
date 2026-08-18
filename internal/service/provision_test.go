@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/gateway"
@@ -34,6 +35,12 @@ type fakeAccounts struct {
 	createErr  error
 	getCalls   int
 	createArgs []string // email, signer, jwt of the last CreateAccount call
+
+	// By-wallet lookups belong to vehicle sharing, not provisioning. Kept on
+	// the same fake so there is one AccountsAPI stand-in, but provisioning
+	// never reaches them.
+	byWallet    map[string]*gateway.Account
+	byWalletErr error
 }
 
 func (f *fakeAccounts) GetAccountByEmail(email, jwt string) (*gateway.Account, error) {
@@ -43,6 +50,16 @@ func (f *fakeAccounts) GetAccountByEmail(email, jwt string) (*gateway.Account, e
 func (f *fakeAccounts) CreateAccount(email, signer, jwt string) (*gateway.Account, error) {
 	f.createArgs = []string{email, signer, jwt}
 	return f.created, f.createErr
+}
+func (f *fakeAccounts) GetAccountByWallet(wallet, _ string) (*gateway.Account, error) {
+	if f.byWalletErr != nil {
+		return nil, f.byWalletErr
+	}
+	acct, ok := f.byWallet[strings.ToLower(wallet)]
+	if !ok {
+		return nil, gateway.ErrAccountNotFound
+	}
+	return acct, nil
 }
 
 func provisionFixture(t *testing.T, creds *fakeCreds, accounts *fakeAccounts) (*ProvisionService, *AuthzService, context.Context) {
