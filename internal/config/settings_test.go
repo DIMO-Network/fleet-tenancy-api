@@ -1,6 +1,8 @@
 package config
 
 import (
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -134,4 +136,59 @@ func TestTrustedCallerKeyStoredWithTrailingNewlineStillMatches(t *testing.T) {
 	got, err := s.ParsedTrustedCallerKeys()
 	require.NoError(t, err)
 	assert.Equal(t, k1, got["fleet-lite-app"])
+}
+
+// SharingConfigured gates whether the vehicle-sharing queue starts and whether
+// the share endpoint can run at all. Every field is load-bearing: a missing
+// SACD address means calling the wrong contract, a missing bundler means no way
+// to send the UserOp, and a zero chain id would sign for the wrong chain. The
+// table asserts each one alone is enough to turn the feature off.
+func TestSharingConfigured(t *testing.T) {
+	full := func() *Settings {
+		return &Settings{
+			SacdAddress:       "0x3c152B5d96769661008Ff404224d6530FCAC766d",
+			VehicleNftAddress: "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
+			RPCURL:            mustURL(t, "https://polygon-mainnet.example/v2/key"),
+			BundlerURL:        mustURL(t, "https://rpc.zerodev.app/api/v2/bundler/proj"),
+			ChainID:           137,
+		}
+	}
+
+	require.True(t, full().SharingConfigured(), "a fully populated config must be considered configured")
+
+	for name, blank := range map[string]func(*Settings){
+		"no SACD address":        func(s *Settings) { s.SacdAddress = "" },
+		"no vehicle NFT address": func(s *Settings) { s.VehicleNftAddress = "" },
+		"no RPC URL":             func(s *Settings) { s.RPCURL = url.URL{} },
+		"no bundler URL":         func(s *Settings) { s.BundlerURL = url.URL{} },
+		"no chain id":            func(s *Settings) { s.ChainID = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := full()
+			blank(s)
+			assert.False(t, s.SharingConfigured(), "%s must turn sharing off", name)
+		})
+	}
+}
+
+// Sharing settings are not boot-required in this step. The service is
+// load-bearing for two apps that fail closed on /v1/authz, so it must keep
+// booting without a feature neither of them calls yet. The step-2 PR of
+// docs/plans/05-vehicle-sharing.md is what tightens this, once the chart has
+// been syncing the secrets for a release.
+func TestValidate_SharingSettingsAreNotBootRequired(t *testing.T) {
+	s := &Settings{
+		Environment:        "prod",
+		TenantSecretEncKey: "a-real-key",
+		TrustedCallerKeys:  "fleet-lite:" + strings.Repeat("k", MinTrustedCallerKeyLength),
+	}
+	require.False(t, s.SharingConfigured(), "precondition: sharing is unconfigured here")
+	assert.NoError(t, s.Validate(), "an unconfigured sharing feature must not stop the service booting")
+}
+
+func mustURL(t *testing.T, raw string) url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	require.NoError(t, err)
+	return *u
 }

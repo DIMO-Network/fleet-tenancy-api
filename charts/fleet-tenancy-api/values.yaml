@@ -40,6 +40,12 @@ env:
   INVITE_ACCEPT_URL_BASE: https://fleets.dimo.co
   ATTEST_API_URL: https://attest.dimo.zone
   CHAIN_ID: '137'
+  # On-chain vehicle sharing (docs/plans/05-vehicle-sharing.md). SACD is the
+  # DIMO Service Access Control Document contract — a SEPARATE contract from
+  # both the registry and the VehicleId NFT above. RPC_URL and BUNDLER_URL
+  # carry API keys and are secrets, so they arrive through the ExternalSecret,
+  # not here.
+  SACD_ADDRESS: '0x3c152B5d96769661008Ff404224d6530FCAC766d'
 ingress:
   enabled: false
   className: nginx
