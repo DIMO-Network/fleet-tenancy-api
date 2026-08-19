@@ -17,6 +17,7 @@ finished.
 | [03-fleet-lite-operator-tenants.md](03-fleet-lite-operator-tenants.md) | Planned 2026-08-15, nothing shipped |
 | [04-invitations-into-tenancy.md](04-invitations-into-tenancy.md) | P1 deployed, P2 backfilled 2026-08-16; flag flip outstanding |
 | [06-signer-key-consolidation.md](06-signer-key-consolidation.md) | Written 2026-08-19, not started |
+| [07-vehicle-set-coherence.md](07-vehicle-set-coherence.md) | Written 2026-08-19, not started; step 1 is an open prod bug |
 
 ## Writing one
 
