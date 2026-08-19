@@ -89,7 +89,7 @@ func main() {
 		}
 	}()
 
-	// The vehicle-sharing job queue (docs/plans/05-vehicle-sharing.md). Nil and
+	// The vehicle-sharing job queue (docs/HANDOFF.md, "Vehicle sharing"). Nil and
 	// silent when unconfigured, which is every environment until the SACD and
 	// bundler settings are in place — a service two apps fail closed on does not
 	// get to refuse to boot over a feature neither of them calls yet.

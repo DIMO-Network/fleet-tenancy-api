@@ -14,10 +14,10 @@ the callers' local group tables — see `docs/HANDOFF.md`.
 
 Since 2026-08-19 this service is also an **on-chain writer**: vehicle sharing
 grants SACD permissions by sending a UserOperation from the vehicle owner's
-kernel account, signed with the tenant's signer key. Merged to `main`, not yet
-released, and **no share has ever been sent** — see `docs/HANDOFF.md`. It brings
-River, a bundler connection and a code path that spends gas into the same
-process that serves `/v1/authz`, which is why its queue is small and its
+kernel account, signed with the tenant's signer key. Released in `v0.14.0` and
+healthy in prod, but **no share has ever been sent** — see `docs/HANDOFF.md`.
+It brings River, a bundler connection and a code path that spends gas into the
+same process that serves `/v1/authz`, which is why its queue is small and its
 settings are all-or-nothing.
 
 **Consequence worth internalising: an outage here is an outage there.** Both

@@ -55,7 +55,7 @@ type Settings struct {
 	AttestAPIURL url.URL `yaml:"ATTEST_API_URL"`
 	ChainID      int64   `yaml:"CHAIN_ID"`
 
-	// On-chain vehicle sharing (docs/plans/05-vehicle-sharing.md). A share is
+	// On-chain vehicle sharing (docs/HANDOFF.md, "Vehicle sharing"). A share is
 	// one SACD setPermissions0 call, sent as a UserOp from the vehicle owner's
 	// kernel account and signed by the acting tenant's signer key — the same
 	// mechanism kaufmann-oracle uses to re-share a transferred vehicle, pointed

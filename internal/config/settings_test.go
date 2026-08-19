@@ -171,11 +171,11 @@ func TestSharingConfigured(t *testing.T) {
 	}
 }
 
-// Sharing settings are not boot-required in this step. The service is
+// Sharing settings are not boot-required, and stay that way. The service is
 // load-bearing for two apps that fail closed on /v1/authz, so it must keep
-// booting without a feature neither of them calls yet. The step-2 PR of
-// docs/plans/05-vehicle-sharing.md is what tightens this, once the chart has
-// been syncing the secrets for a release.
+// booting in an environment where sharing is simply off. What Validate does
+// enforce is all-or-nothing: see validateSharing and the test below it. Nothing
+// set at all is the supported off state; a half-configured feature is not.
 func TestValidate_SharingSettingsAreNotBootRequired(t *testing.T) {
 	s := &Settings{
 		Environment:        "prod",

@@ -84,7 +84,7 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	provisionCtrl := controllers.NewProvisionController(logger, provisionSvc, credSvc, tenantSvc, CallerFrom)
 	groupsCtrl := controllers.NewGroupsController(logger, service.NewGroupService(logger, pdb), tenantSvc, CallerFrom)
 
-	// Vehicle sharing (docs/plans/05-vehicle-sharing.md).
+	// Vehicle sharing (docs/HANDOFF.md, "Vehicle sharing").
 	//
 	// The signer gate asks accounts-api live rather than reading
 	// users.shared_account_signer_address, which is empty for every owner whose

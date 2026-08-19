@@ -57,16 +57,17 @@ type Queue struct {
 //
 //   - Sharing is not configured. This service is what both apps fail closed
 //     on, and a missing bundler URL must not stop it answering /v1/authz.
-//   - No workers are registered (workers == nil), which is every build until
-//     the share worker lands in step 2 of docs/plans/05-vehicle-sharing.md.
+//   - No workers are registered (workers == nil). The share worker has shipped,
+//     so this is no longer the ordinary case — but the guard stays, because it
+//     is what stands between an empty bundle and a fatal at startup.
 //
 // The second case is not merely an optimisation. river.Client.Start rejects an
 // empty Workers bundle outright — "at least one Worker must be added to the
 // Workers bundle", verified against River v0.31.0 and a live database — so
 // building a client here with nothing registered would turn into a fatal error
 // at startup and take the service down in exactly the environments where
-// sharing IS configured. Nothing enqueues share jobs until
-// that step anyway, so the queue is idle rather than backlogged.
+// sharing IS configured. A build with no workers also enqueues nothing, so the
+// queue is idle rather than backlogged.
 //
 // Callers check for a nil Queue rather than a nil error.
 func NewQueue(ctx context.Context, logger *zerolog.Logger, settings *config.Settings, workers *river.Workers) (*Queue, error) {

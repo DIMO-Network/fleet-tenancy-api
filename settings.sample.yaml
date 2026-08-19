@@ -41,7 +41,7 @@ ACCOUNTS_API_ENDPOINT: https://accounts.dimo.org
 ATTEST_API_URL: https://attest.dimo.zone
 CHAIN_ID: 137
 
-# On-chain vehicle sharing (docs/plans/05-vehicle-sharing.md). Not boot-required:
+# On-chain vehicle sharing (docs/HANDOFF.md, "Vehicle sharing"). Not boot-required:
 # unset means the feature is off and the job queue never starts, which is what
 # every environment looks like until the SACD and bundler settings are in place.
 #

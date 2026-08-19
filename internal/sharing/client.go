@@ -13,8 +13,9 @@
 // tenant itself, which is why the authorization chain around it is stricter.
 //
 // This file is the plumbing only — the client and its lifecycle. The call
-// construction, the worker and the authorization chain land in step 2 of
-// docs/plans/05-vehicle-sharing.md.
+// construction is in call.go, the worker in worker.go, and the authorization
+// chain in internal/service/sharing.go. The decisions behind all of them are
+// recorded in docs/HANDOFF.md under "Vehicle sharing".
 package sharing
 
 import (

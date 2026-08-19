@@ -1995,7 +1995,7 @@ for an unrelated reason will hit this; it deserves its own fix.
   clean"); the flag flipped the same day. Nothing has exercised the console send
   path end to end.
 
-## Vehicle sharing — MERGED 2026-08-19, NOT YET RELEASED
+## Vehicle sharing — RELEASED 2026-08-19, UNEXERCISED
 
 A fleet-lite customer shares a vehicle with a 0x wallet: an on-chain SACD
 grant, signed server-side by the operator's signer on the vehicle owner's
@@ -2009,8 +2009,8 @@ spends gas, alongside the `/v1/authz` hot path both apps fail closed on.
 
 | Repo | PRs | State |
 |---|---|---|
-| this | #53 prod values, #50 tx plumbing, #56 chart secrets, #52 foundations, #54 write path | merged to `main`, **no `v*` tag cut** |
-| fleet-lite | #132 api + `canShare`, #133 list-view button and modal | merged to `main` |
+| this | #53 prod values, #50 tx plumbing, #56 chart secrets, #52 foundations, #54 write path | `v0.14.0`, image `2b24cb7`, in prod |
+| fleet-lite | #132 api + `canShare`, #133 list-view button and modal | `v0.15.0`, image `49aafdb`, in prod |
 | kaufmann, b2b | none — nothing was needed | — |
 
 ```
@@ -2019,22 +2019,30 @@ GET  /v1/tenants/{id}/vehicles/{tokenId}/share/status  -> {isSuccessful}
 POST /v1/tenants/{id}/shareable-owners                 -> the display gate
 ```
 
-### Nothing has sent a UserOp yet
+### Live, but nothing has sent a UserOp yet
 
-Every layer is unit-tested, the queue is proven against a real database
-(migrations apply, the pgx pool resolves `search_path` to the
-`fleet_tenancy_api` schema, the client starts and registers in `river_queue`),
-and all three routes refuse an unauthenticated caller. **No share has been
-made.** The first one is the test that matters: watch for
-`vehicle share granted on chain` with its `tx_hash`. The share button in a real
-fleet list is also unexercised — only the modal was, in isolation.
+Both services are in prod and healthy (2/2, zero errors on rollout). Every layer
+is unit-tested, the queue is proven against a real database (migrations apply,
+the pgx pool resolves `search_path` to the `fleet_tenancy_api` schema, the
+client starts and registers in `river_queue`), and all three routes refuse an
+unauthenticated caller. **No share has been made.** The first one is still the
+test that matters — a healthy rollout proves the queue starts, not that a
+UserOp lands:
 
-Config is already in prod ahead of the code, which is the ordering the
-chart/image split exists to give us. `values-prod.yaml` carries `SACD_ADDRESS`
-and the five keys #53 restored; ASM holds `prod/fleet-tenancy-api/{rpc_url,
-bundler_url}`, copied from `prod/kaufmann-oracle/web3/{rpc,bundler}`. On the
-first tag `SharingConfigured()` becomes true, the queue starts, and
-`Settings.Validate` begins enforcing all-or-nothing on the sharing settings.
+```sh
+kubectl -n prod logs -l app.kubernetes.io/name=fleet-tenancy-api \
+  --all-containers -f | grep -iE 'share|sacd'
+```
+
+Success is `vehicle share granted on chain` with a `tx_hash`. The share button
+in a real fleet list is also unexercised — only the modal was, in isolation.
+
+Config went to prod ahead of the code, which is the ordering the chart/image
+split exists to give us. `values-prod.yaml` carries `SACD_ADDRESS` and the five
+keys #53 restored; ASM holds `prod/fleet-tenancy-api/{rpc_url, bundler_url}`,
+copied from `prod/kaufmann-oracle/web3/{rpc,bundler}`. As of `v0.14.0`
+`SharingConfigured()` is true, the queue is running, and `Settings.Validate`
+enforces all-or-nothing on the sharing settings.
 
 ### Who can actually share — the caveat to know
 
