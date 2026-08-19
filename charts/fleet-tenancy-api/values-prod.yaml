@@ -2,7 +2,7 @@ replicaCount: 2
 image:
   repository: dimozone/fleet-tenancy-api
   pullPolicy: IfNotPresent
-  tag: 431be35
+  tag: 2b24cb7
 imagePullSecrets: []
 nameOverride: ''
 fullnameOverride: ''
@@ -26,22 +26,10 @@ env:
   DB_MAX_IDLE_CONNECTIONS: '6'
   DB_SSL_MODE: require
   JWT_KEY_SET_URL: https://auth.dimo.zone/keys
-  # The DIMO platform services behind the token minter and on-behalf
-  # provisioning. These have been in values.yaml since the chart was written
-  # and were never copied here, so prod has been running with all four unset —
-  # see the PR for what that means for each consumer.
-  #
-  # identity-api is reached in-cluster, matching kaufmann-oracle and
-  # fleet-lite-app's prod charts and this file's own ATTEST_API_URL. The rest
-  # have no in-cluster address and are the same public endpoints both siblings
-  # use in prod.
   DIMO_AUTH_URL: https://auth.dimo.zone
   TOKEN_EXCHANGE_URL: https://token-exchange-api.dimo.zone
   IDENTITY_API_ENDPOINT: http://identity-api-prod.prod.svc.cluster.local:8080/query
   ACCOUNTS_API_ENDPOINT: https://accounts.dimo.org
-  # The VehicleId NFT contract, used to build the did:erc721 subject of every
-  # group attestation this service publishes. Unset, common.HexToAddress("")
-  # yields the zero address and the DIDs name a contract that does not exist.
   VEHICLE_NFT_ADDRESS: '0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF'
   ATTEST_API_URL: http://dis-prod-attest.prod.svc.cluster.local:8080
   PROVISION_EMAIL_FROM: no-reply@dimo.co
@@ -52,19 +40,10 @@ env:
   INVITE_EXPIRY_HOURS: '168'
   INVITE_ACCEPT_URL_BASE: https://fleets.dimo.co
   CHAIN_ID: '137'
-  # On-chain vehicle sharing (docs/plans/05-vehicle-sharing.md). SACD is the
-  # DIMO Service Access Control Document contract — a SEPARATE contract from
-  # both the registry and the VehicleId NFT above. RPC_URL and BUNDLER_URL
-  # carry API keys and are secrets, so they arrive through the ExternalSecret,
-  # not here.
   SACD_ADDRESS: '0x3c152B5d96769661008Ff404224d6530FCAC766d'
 ingress:
   enabled: true
   className: nginx
-  # Linkerd identities allowed to reach the `webhook` port. The namespace
-  # defaults to deny, and the cluster's shared Servers only cover the port
-  # names http/https/grpc/mon-http — see templates/linkerd-policy.yaml. Only
-  # the ingress controller is admitted: nothing in-cluster should call this.
   linkerdClientIdentities:
     - ingress-ingress-nginx.ingress.serviceaccount.identity.linkerd.cluster.local
   annotations:
