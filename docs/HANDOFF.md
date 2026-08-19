@@ -2160,8 +2160,8 @@ whole stack has landed.
 
 ## Session handoff, 2026-08-19 ~18:30 UTC — step 1 SHIPPED, kept for the incident record
 
-**Step 1 is done and verified against prod** — fleet-lite-app#134, open and
-CI-green as of 2026-08-19 ~20:00 UTC, not yet merged; see the section at the end
+**Step 1 is done, released and verified in prod** — fleet-lite-app#134 and
+#135, released as `v0.16.0` on 2026-08-19; see the section at the end
 of this file. Everything below is the incident analysis that produced it, which
 is still the best account of *why* the empty fleet happened and is worth reading
 before touching the sync or plan 07's remaining steps. Treat its instructions as
@@ -2274,15 +2274,17 @@ sent. Unchanged by this session.
 
 ## PICK UP HERE — session handoff, 2026-08-19 ~20:00 UTC
 
-Step 1 of [`plans/07-vehicle-roster.md`](plans/07-vehicle-roster.md) is done and
-verified against prod. **Start with step 2** — the freshness fix — or with plan
-06 step 1, which is read-only and cheap.
+Step 1 of [`plans/07-vehicle-roster.md`](plans/07-vehicle-roster.md) is done,
+released and verified in prod. **Start with step 2** — the freshness fix — or
+with plan 06 step 1, which is read-only and cheap.
 
 ### What shipped
 
-**[fleet-lite-app#134](https://github.com/DIMO-Network/fleet-lite-app/pull/134)**
-— open, CI-green, **not yet merged**. All of it is in that repo; nothing in step
-1 touched fleet-tenancy-api, despite the plan saying "here".
+**fleet-lite-app [#134](https://github.com/DIMO-Network/fleet-lite-app/pull/134)
+and [#135](https://github.com/DIMO-Network/fleet-lite-app/pull/135), released as
+`v0.16.0`** (image `bbfd63a`, ArgoCD Synced/Healthy, 2/2 pods). All of it is in
+that repo; nothing in step 1 touched fleet-tenancy-api, despite the plan saying
+"here".
 
 1. `UseTenancy` wired in `api/cmd/fleet-lite-app/sync_vehicles.go`, guarded on
    `Configured()` as `app.go:118` does.
@@ -2305,18 +2307,19 @@ skip went unseen; the pod was collected before anyone looked — and
 Both now match `groups-diff`: `0` and three days. A non-zero exit nobody can read
 is not much better than a green one.
 
-### What was verified, and what was not
+### What was verified — all of it, in prod, on `v0.16.0`
 
-The bug was reproduced first, on the deployed image, so there is a real
+The bug was reproduced first, on the then-deployed image, so there is a real
 before/after rather than an assertion:
 
-| | baseline (`49aafdb`) | fixed binary |
+| | baseline (`49aafdb`) | released (`v0.16.0` / `bbfd63a`) |
 |---|---|---|
 | `sync-vehicles` | `synced=612 skipped_tenants=1` | `synced=621 skipped_tenants=0` |
 | TRAST | skipped, *"no tenancy client is configured"* | `synced=9` |
-| exit | `0`, job condition `Complete` | `0` |
+| job | `Complete`, exit `0` | `Complete`, exit `0` |
 
-The difference is exactly TRAST's nine. `vehicles-diff` reports
+The difference is exactly TRAST's nine. Both runs are in-cluster, from the real
+CronJob definitions. `vehicles-diff` reports
 `entitled=9 local=9 agree=9 missing_local=0 extra_local=0`, exit 0.
 
 **The failure path was confirmed by accident, and it is the most useful result.**
@@ -2326,12 +2329,39 @@ past the `Configured()` guard all the way to `fetch operator privileged
 vehicles`, so `TenantDetail`, `Entitlements` and `DimoToken` all succeeded) and
 that a genuine skip now fails the run.
 
-**Not verified: the chart values.** `backoffLimit: 0` and the 3-day TTL cannot be
-confirmed until this deploys. After merge, trigger one manual job and check a
-failed job actually persists.
+**The chart values were confirmed the same way, by a genuine failure.** See the
+deploy-mechanics section below for why prod briefly ran the new chart against
+the old binary; the upshot is that `vehicles-diff` fired against an image with no
+such subcommand, exited 2, the job went `Failed`, **exactly one pod was created**
+— `backoffLimit: 0` holding, no retry — and it persisted on the three-day TTL
+rather than being collected within the hour. Nothing about that needed
+contriving, and it is the property the incident lacked.
 
-Note the two full `sync-vehicles` runs wrote to prod — idempotently, the same
-operation the 03:00 cron performs, and `vehicles-diff` was clean afterwards.
+Note the `sync-vehicles` runs wrote to prod — idempotently, the same operation
+the 03:00 cron performs, and `vehicles-diff` was clean afterwards.
+
+### Merging does not deploy this app
+
+Worth internalising before the next change that touches code and chart together.
+
+`values.yaml` is bumped by `buildpushdev` on merge to main, but **prod's image
+tag lives in `values-prod.yaml`** and only moves when a **`v*` tag** is pushed
+(`.github/workflows/buildpushprod.yml`). `cronJobs` has no prod override, so
+merging fleet-lite-app#134 shipped the *chart* to prod immediately while the
+*binary* stayed on the previous release. That left a `vehicles-diff` CronJob
+scheduled at 03:30 against an image that had never heard of the subcommand —
+a nightly red job meaning nothing, which is corrosive to the exact signal this
+work existed to create. Closed by releasing `v0.16.0`.
+
+Two follow-ons:
+
+- ArgoCD reporting `Synced/Healthy` is **not** evidence the code deployed. It
+  was Synced at the version-bump revision the whole time the binary was stale.
+  Check the image tag on the workload, not the app's sync status.
+- The version-bump workflow round-trips `values.yaml` and **strips every comment
+  in the file**. Two explanatory comments were gone one commit after landing.
+  Durable rationale goes in `templates/cronjobs.yaml`, which it does not rewrite
+  (fleet-lite-app#135).
 
 ### Running fleet-lite commands against prod from a laptop
 
