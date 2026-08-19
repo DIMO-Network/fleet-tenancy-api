@@ -190,11 +190,11 @@ with the same meaning.
 
 ### 1. Prove the two copies are the same key
 
-A `signer-diff` subcommand in this service, alongside `invitations-diff` and
-kaufmann's `tenancy-diff`. For every tenant present in both databases: decrypt
-both `signer_key_enc` values under their own master keys, derive the public
-address from each, and compare **addresses only — never log, print or compare
-the key material**. Report `agree / differ / missing_local / missing_remote`,
+A `signer-diff` subcommand in this service, shaped like fleet-lite's
+`tenancy-diff` and `groups-diff`. For every tenant present in both databases:
+decrypt both `signer_key_enc` values under their own master keys, derive the
+public address from each, and compare **addresses only — never log, print or
+compare the key material**. Report `agree / differ / missing_local / missing_remote`,
 and cross-check each derived address against the stored `signer_address` in both
 rows.
 

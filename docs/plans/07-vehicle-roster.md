@@ -139,18 +139,44 @@ Production changes are acceptable here — load is low and real users are few
 (stated 2026-08-19) — so these are sequenced for reversibility rather than for
 zero downtime.
 
-### 1. Make the refresh trustworthy, and its failures loud
+### 1. Make the refresh trustworthy, and its failures loud — DONE 2026-08-19
 
 Wire `UseTenancy` into `sync_vehicles.go`; audit the same file for other
 by-hand-constructed services missing wires (`UseMemberships`, the group index).
 **A skipped tenant must exit non-zero** so the CronJob shows as failed. Add a
-`vehicles-diff` command here, alongside `invitations-diff` and `groups-diff`,
-reporting `agree / missing_local / extra_local` per tenant.
+`vehicles-diff` command alongside `tenancy-diff` and `groups-diff`, reporting
+`agree / missing_local / extra_local` per tenant.
 
 **Cost if wrong:** doing only the wiring is the trap. A silent skip turned a
 one-line omission into three days of a customer seeing an empty fleet; leaving
 the run green means the next omission costs the same again. This step is also
 the only one that helps before anything else lands.
+
+**Shipped in fleet-lite-app#134**, not here — all three changes live in that
+repo, `sync_vehicles.go` and the new `vehicles_diff.go`, next to the sibling
+diffs. Nothing in this step touched fleet-tenancy-api.
+
+The wiring audit came back negative on purpose: `UseMemberships` and the group
+index are read-time filters that the sync path never consults, so wiring them
+would be dead weight that reads as coverage. That reasoning is in the code
+comment so the next audit need not redo it.
+
+Two things beyond the letter of the step, both needed for the exit code to be
+worth anything. The CronJob inherited the chart's 1-hour
+`ttlSecondsAfterFinished` — which is *why* the skip was never seen; the pod was
+gone before anyone looked — and `backoffLimit: 1`, which would retry a
+deterministic skip and double the log. Both now match `groups-diff`: `0` and
+three days. And `vehicles-diff` got its own CronJob at 03:30, half an hour after
+the sync it gates.
+
+Verified against prod the same day. The bug was reproduced first on the deployed
+image — TRAST skipped, `synced=612 skipped_tenants=1`, job `exitCode=0`,
+condition `Complete` — then the fixed binary run against prod gave
+`synced=621 skipped_tenants=0`, the difference being exactly TRAST's nine, with
+`vehicles-diff` clean at `agree=9`. The failure path was confirmed too: a run
+made before identity-api was reachable exited 1, logged at error level and named
+the tenant. The chart values are the one part still unverified — they cannot be
+until it deploys.
 
 ### 2. Stop the freshness mixing
 
