@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus
 `fleet-lite-app/docs/operator-tenancy/` (the full design set — it is gitignored
 in this repo until the weaknesses it documents are fixed).
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-19*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-19 20:00 UTC*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -2158,11 +2158,14 @@ branch is gone. #51 was lost that way and reopened as #56. Retarget children to
 `main` before merging the parent, or do not delete base branches until the
 whole stack has landed.
 
-## PICK UP HERE — session handoff, 2026-08-19 ~18:30 UTC
+## Session handoff, 2026-08-19 ~18:30 UTC — step 1 SHIPPED, kept for the incident record
 
-Start with **step 1 of [`plans/07-vehicle-roster.md`](plans/07-vehicle-roster.md)**.
-It is an open production bug, it is small, and it is independent of the rest of
-that plan.
+**Step 1 is done and verified against prod** — fleet-lite-app#134, open and
+CI-green as of 2026-08-19 ~20:00 UTC, not yet merged; see the section at the end
+of this file. Everything below is the incident analysis that produced it, which
+is still the best account of *why* the empty fleet happened and is worth reading
+before touching the sync or plan 07's remaining steps. Treat its instructions as
+history: they describe work that has been done.
 
 ### What happened
 
@@ -2212,8 +2215,10 @@ Three changes; the second matters most.
    reason, fail the run. The wiring omission cost three days of a customer
    seeing an empty fleet *because the CronJob stayed green*. Fixing only (1)
    leaves the next omission to cost the same again.
-3. Add a `vehicles-diff` command here, alongside `invitations-diff` and
-   `groups-diff`: per explicit-mode tenant, compare this service's active
+3. Add a `vehicles-diff` command alongside `tenancy-diff` and
+   `groups-diff` — in fleet-lite-app, where those live; `invitations-diff` was
+   deleted in 7ed9bd8 when P4 retired the local invitation path, leaving no
+   local side to diff. Per explicit-mode tenant, compare this service's active
    entitled set against fleet-lite's local rows, reporting
    `agree / missing_local / extra_local`. From 2026-08-18 it would have printed
    `missing_local=9, extra_local=1` for TRAST.
@@ -2261,6 +2266,113 @@ Tables live in a schema named for the database, not `public` — qualify as
 Steps 2–5 of plan 07 — the freshness fix, the roster table here, the reader
 cutover, and shrinking `vins`. Plan 06 (signer-key consolidation) is also
 unstarted; its step 1 is read-only and cheap.
+
+**Nothing about vehicle sharing has been exercised yet** — still no UserOp ever
+sent. Unchanged by this session.
+
+---
+
+## PICK UP HERE — session handoff, 2026-08-19 ~20:00 UTC
+
+Step 1 of [`plans/07-vehicle-roster.md`](plans/07-vehicle-roster.md) is done and
+verified against prod. **Start with step 2** — the freshness fix — or with plan
+06 step 1, which is read-only and cheap.
+
+### What shipped
+
+**[fleet-lite-app#134](https://github.com/DIMO-Network/fleet-lite-app/pull/134)**
+— open, CI-green, **not yet merged**. All of it is in that repo; nothing in step
+1 touched fleet-tenancy-api, despite the plan saying "here".
+
+1. `UseTenancy` wired in `api/cmd/fleet-lite-app/sync_vehicles.go`, guarded on
+   `Configured()` as `app.go:118` does.
+2. A skipped tenant now fails the run: skips collected not just counted, each
+   logged with a `reason`, the summary logged at error level naming
+   `skipped_tenant_ids`, and `ExitFailure` returned. The loop still continues
+   past a bad tenant — one tenant's failure should not cost the rest their sync.
+3. New `vehicles-diff`, alongside `tenancy-diff` and `groups-diff`, with a
+   CronJob at 03:30.
+
+**The wiring audit came back negative on purpose.** `UseMemberships` and the
+group index are read-time filters that the sync path never consults, so wiring
+them would be dead weight that reads as coverage. The reasoning is in the code
+comment; do not reopen it.
+
+**The chart carried half the fix, and this was not in the plan.** `sync-vehicles`
+inherited the template's 1-hour `ttlSecondsAfterFinished` — which is *why* the
+skip went unseen; the pod was collected before anyone looked — and
+`backoffLimit: 1`, which would retry a deterministic skip and double the log.
+Both now match `groups-diff`: `0` and three days. A non-zero exit nobody can read
+is not much better than a green one.
+
+### What was verified, and what was not
+
+The bug was reproduced first, on the deployed image, so there is a real
+before/after rather than an assertion:
+
+| | baseline (`49aafdb`) | fixed binary |
+|---|---|---|
+| `sync-vehicles` | `synced=612 skipped_tenants=1` | `synced=621 skipped_tenants=0` |
+| TRAST | skipped, *"no tenancy client is configured"* | `synced=9` |
+| exit | `0`, job condition `Complete` | `0` |
+
+The difference is exactly TRAST's nine. `vehicles-diff` reports
+`entitled=9 local=9 agree=9 missing_local=0 extra_local=0`, exit 0.
+
+**The failure path was confirmed by accident, and it is the most useful result.**
+A run made before identity-api was port-forwarded exited **1**, logged at error
+level, and named the tenant — proving both that the tenancy wire works (TRAST got
+past the `Configured()` guard all the way to `fetch operator privileged
+vehicles`, so `TenantDetail`, `Entitlements` and `DimoToken` all succeeded) and
+that a genuine skip now fails the run.
+
+**Not verified: the chart values.** `backoffLimit: 0` and the 3-day TTL cannot be
+confirmed until this deploys. After merge, trigger one manual job and check a
+failed job actually persists.
+
+Note the two full `sync-vehicles` runs wrote to prod — idempotently, the same
+operation the 03:00 cron performs, and `vehicles-diff` was clean afterwards.
+
+### Running fleet-lite commands against prod from a laptop
+
+Worth recording, because it took a few attempts and is how step 2 will be tested
+too. The DB tunnel alone is not enough: `TENANCY_API_URL` and
+`IDENTITY_API_ENDPOINT` are both `.svc.cluster.local` and need port-forwards.
+
+```sh
+ssh dimo-database-prod                                              # LocalForward 5430
+kubectl -n prod port-forward svc/fleet-tenancy-api 18084:8084
+kubectl -n prod port-forward svc/identity-api-prod 18080:8080
+```
+
+Build a `settings.yaml` from `configmap/fleet-lite-app-config` +
+`secret/fleet-lite-app-secret`, then override three values: `DB.HOST/PORT` to
+`localhost:5430`, `TENANCY_API_URL` to `http://localhost:18084`,
+`IDENTITY_API_ENDPOINT` to `http://localhost:18080/query`. Two traps: the `DB_*`
+env keys collapse into a **nested `DB:` block** (`db.Settings` yaml tags are
+`USER`/`PASSWORD`/`HOST`/`PORT`/`NAME`/`SSL_MODE`), and ints and bools must be
+emitted unquoted or `LoadConfig` refuses the file.
+
+### A correction to make once, not repeatedly
+
+`invitations-diff` **does not exist.** It was deleted in fleet-lite-app `7ed9bd8`
+when P4 retired the local invitation path — there is no local side left to diff.
+Plans 06 and 07 both cited it as a live sibling to copy; both are now corrected
+to name `tenancy-diff` and `groups-diff`, which are real and both live in
+fleet-lite-app. Earlier references in this file and in plan 04 are left alone:
+they record runs from when the command did exist, and are accurate history.
+
+### What is NOT started
+
+Steps 2–5 of plan 07 — the freshness fix, the roster table here, the reader
+cutover, and shrinking `vins`. Plan 06 (signer-key consolidation) is also
+unstarted; its step 1 is read-only and cheap.
+
+Step 2 is the one that closes the incident properly: step 1 makes the refresh
+trustworthy and its failures loud, but the *cached-set-under-live-gates* mixing
+that turned a stale cache into a **zero**-vehicle fleet is still there. Note its
+own warning — a token in the resolved set with no local metadata row must still
+appear, and that case needs a test or the bug just moves somewhere harder to see.
 
 **Nothing about vehicle sharing has been exercised yet** — still no UserOp ever
 sent. Unchanged by this session.
