@@ -2,7 +2,7 @@ replicaCount: 1
 image:
   repository: dimozone/fleet-tenancy-api
   pullPolicy: IfNotPresent
-  tag: eba9db7
+  tag: 5e2d669
 imagePullSecrets: []
 nameOverride: ''
 fullnameOverride: ''
@@ -40,6 +40,7 @@ env:
   INVITE_ACCEPT_URL_BASE: https://fleets.dimo.co
   ATTEST_API_URL: https://attest.dimo.zone
   CHAIN_ID: '137'
+  SACD_ADDRESS: '0x3c152B5d96769661008Ff404224d6530FCAC766d'
 ingress:
   enabled: false
   className: nginx
