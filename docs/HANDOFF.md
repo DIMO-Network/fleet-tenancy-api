@@ -1994,3 +1994,155 @@ for an unrelated reason will hit this; it deserves its own fix.
   order against the plan's own gate ("after a soak with the flag on and the diff
   clean"); the flag flipped the same day. Nothing has exercised the console send
   path end to end.
+
+## Vehicle sharing — MERGED 2026-08-19, NOT YET RELEASED
+
+A fleet-lite customer shares a vehicle with a 0x wallet: an on-chain SACD
+grant, signed server-side by the operator's signer on the vehicle owner's
+kernel account. The owner keeps the NFT and never signs. Same mechanism
+kaufmann uses to re-share a transferred vehicle, pointed at a grantee the
+customer chooses.
+
+This service became an on-chain **writer** for the first time. That is the fact
+worth carrying: it now holds River, a bundler connection and a code path that
+spends gas, alongside the `/v1/authz` hot path both apps fail closed on.
+
+| Repo | PRs | State |
+|---|---|---|
+| this | #53 prod values, #50 tx plumbing, #56 chart secrets, #52 foundations, #54 write path | merged to `main`, **no `v*` tag cut** |
+| fleet-lite | #132 api + `canShare`, #133 list-view button and modal | merged to `main` |
+| kaufmann, b2b | none — nothing was needed | — |
+
+```
+POST /v1/tenants/{id}/vehicles/{tokenId}/share         -> 202 {jobId}
+GET  /v1/tenants/{id}/vehicles/{tokenId}/share/status  -> {isSuccessful}
+POST /v1/tenants/{id}/shareable-owners                 -> the display gate
+```
+
+### Nothing has sent a UserOp yet
+
+Every layer is unit-tested, the queue is proven against a real database
+(migrations apply, the pgx pool resolves `search_path` to the
+`fleet_tenancy_api` schema, the client starts and registers in `river_queue`),
+and all three routes refuse an unauthenticated caller. **No share has been
+made.** The first one is the test that matters: watch for
+`vehicle share granted on chain` with its `tx_hash`. The share button in a real
+fleet list is also unexercised — only the modal was, in isolation.
+
+Config is already in prod ahead of the code, which is the ordering the
+chart/image split exists to give us. `values-prod.yaml` carries `SACD_ADDRESS`
+and the five keys #53 restored; ASM holds `prod/fleet-tenancy-api/{rpc_url,
+bundler_url}`, copied from `prod/kaufmann-oracle/web3/{rpc,bundler}`. On the
+first tag `SharingConfigured()` becomes true, the queue starts, and
+`Settings.Validate` begins enforcing all-or-nothing on the sharing settings.
+
+### Who can actually share — the caveat to know
+
+Sharing needs a signer key on the tenant's **effective** credential.
+
+| Tenant kind | Signer | Sharing |
+|---|---|---|
+| Operator | backfilled from kaufmann | yes |
+| Managed customer | none of its own; `Effective()` resolves to the operator's | yes, inherited |
+| Self-serve | own credential, **no signer** | no |
+
+The backfill and `CreateSelfServeTenant` write only `dimo_client_id` and
+`dimo_api_key_enc` for self-serve tenants, so those tenants get `canShare`
+false everywhere and a direct call answers 409 "this tenant has no signer
+configured". It fails closed and legibly, and it matches who the feature was
+designed for — customers whose vehicles arrived through kaufmann's
+email-transfer flow — but it is stated nowhere else. Giving self-serve tenants
+a signer is a real change, not an oversight to patch quietly: kaufmann's
+`backfill-tenant-signers` generates and encrypts a keypair for tenants missing
+one and would port directly.
+
+`SetCredentials` was checked and is safe: it updates only the client id and API
+key on conflict, so re-keying a license from fleet-lite's Settings does not
+clear the signer and silently disable sharing.
+
+### Decisions worth not re-litigating
+
+- **The authorization chain runs twice, and the worker's run is the one that
+  matters.** The handler checks so the customer gets a synchronous answer; the
+  worker re-resolves entitlement, owner and signing authority immediately
+  before the call, because a job can sit in the queue while the vehicle is
+  transferred or the owner revokes our signer. The worker trusts nothing from
+  its own row except which tenant asked for what.
+- **`manage_vehicles` is checked at the HTTP boundary and deliberately not in
+  the worker.** Capability is a property of the request; re-reading it at
+  execution time would let a membership edit between submit and run cancel work
+  that was permitted when it started. It is checked against this service's own
+  authz rather than trusted from fleet-lite — the same gate kaufmann's
+  shared-account routes were missing.
+- **`MaxAttempts: 1`.** A retry cannot distinguish "never sent" from "sent,
+  receipt poll timed out", and the second case re-grants something the customer
+  may since have revoked.
+- **The display gate resolves live against accounts-api, not from
+  `users.shared_account_signer_address`.** That column has one writer —
+  `ProvisionService`, only when this service created the account — so it is
+  empty for every owner whose account kaufmann created, which is exactly the
+  population sharing targets. Resolving live also makes the display gate and
+  the execution gate the same question against the same source, so they cannot
+  disagree the way kaufmann's cached column can.
+- **A 403 and a 502 must never collapse into each other.** An accounts-api
+  outage that read as "not authorized" would tell every customer their owner
+  had revoked a signer that was never revoked. Both directions are tested.
+- **Permissions are the frontend's default set, including `COMMANDS`** —
+  everything except `APPROXIMATE_LOCATION`, cross-checked against b2b's
+  `sacdPermissionValue`. `COMMANDS` grants lock/unlock to a stranger and is in
+  by an explicit 2026-08-18 decision, with a test whose only job is to make
+  removing it deliberate.
+- **Status is the single-job `isSuccessful` boolean**, never a `"Success"`
+  string. Both conventions exist in kaufmann for different operations.
+
+### Two things found while building, both silent failures
+
+- **River will not start with an empty worker bundle** ("at least one Worker
+  must be added"). The plan called for registering an empty one; built that way
+  it becomes `logger.Fatal` at startup in exactly the environments where
+  sharing is configured — a two-app outage from a feature neither app calls.
+  `NewQueue` returns `(nil, nil)` for a nil bundle instead. Only found by
+  running against a real database.
+- **`values-prod.yaml` was missing five settings** `values.yaml` has, including
+  `VEHICLE_NFT_ADDRESS`, which `SharingConfigured()` requires — sharing would
+  have been silently off in prod. Fixed in #53, and it was not only a sharing
+  problem — see below.
+
+### #53 — the minter settings were never in prod
+
+`DIMO_AUTH_URL`, `ACCOUNTS_API_ENDPOINT`, `IDENTITY_API_ENDPOINT`,
+`TOKEN_EXCHANGE_URL` and `VEHICLE_NFT_ADDRESS` were added to `values.yaml` when
+the minter shipped — the provisioning section above records them as "chart
+values.yaml". But `buildpushprod` writes `values-prod.yaml`, and `buildpushdev`
+says of itself *"while there is no dev environment"*. The settings went into the
+one chart file that never reaches a pod.
+
+Nothing caught it because nothing ran the code path: the same section records
+that provisioning has never been exercised against real accounts-api. The first
+deliberate console use would have failed on `"DIMO_AUTH_URL is not configured"`
+— pointing at config that looks correct in `values.yaml`.
+
+Both files now carry identical env key sets. Worth confirming on the next
+rollout:
+
+```sh
+kubectl -n prod exec deploy/fleet-tenancy-api -- env | grep -E \
+  'DIMO_AUTH_URL|ACCOUNTS_API_ENDPOINT|IDENTITY_API_ENDPOINT|VEHICLE_NFT_ADDRESS|SACD_ADDRESS|RPC_URL|BUNDLER_URL'
+```
+
+### Deliberately not built
+
+Revoke (the same machinery with zeroed permissions); the passkey signing path
+for owners whose accounts this ecosystem did not create — phase 2, extracted
+from `b2b-fleet-mgr-app/web` and published as an npm package; and surfacing
+sharing in the b2b console. A per-permission picker was also left out: v1 sends
+one fixed mask, and the request schema already carries an optional
+`permissions` field so a picker is frontend-only work later.
+
+### A trap for whoever merges the next stack
+
+Squash-merging a stacked PR and deleting its branch **closes** the child PRs
+rather than retargeting them, and GitHub refuses to reopen a PR whose base
+branch is gone. #51 was lost that way and reopened as #56. Retarget children to
+`main` before merging the parent, or do not delete base branches until the
+whole stack has landed.

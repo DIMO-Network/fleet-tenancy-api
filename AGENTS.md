@@ -12,6 +12,14 @@ proxies), the token minter and on-behalf provisioning are also live.
 `/user/v1` remains unbuilt. What is left of the groups move is P5 — retiring
 the callers' local group tables — see `docs/HANDOFF.md`.
 
+Since 2026-08-19 this service is also an **on-chain writer**: vehicle sharing
+grants SACD permissions by sending a UserOperation from the vehicle owner's
+kernel account, signed with the tenant's signer key. Merged to `main`, not yet
+released, and **no share has ever been sent** — see `docs/HANDOFF.md`. It brings
+River, a bundler connection and a code path that spends gas into the same
+process that serves `/v1/authz`, which is why its queue is small and its
+settings are all-or-nothing.
+
 **Consequence worth internalising: an outage here is an outage there.** Both
 apps fail closed on `/v1/authz` (503, deliberately not 403), and group writes
 fail the request rather than reporting a success the owner never saw.
@@ -46,7 +54,12 @@ earlier draft's disambiguation device and was renamed away.
   deliberately no `view_all_fleets` capability — it would encode the same fact
   twice with no defined resolution when the two disagree.
 - **Credentials never leave the service.** Callers get a minted DIMO developer
-  JWT, not the key. Don't add an endpoint that returns plaintext.
+  JWT, not the key. Don't add an endpoint that returns plaintext. The signer
+  key is decrypted for the duration of one share and goes nowhere else.
+- **Sharing only works where the effective credential has a signer.** Operators
+  have one from the backfill and managed customers inherit it; self-serve
+  tenants have none, so sharing is off for them. Fails closed, and is not an
+  oversight to patch quietly — see `docs/HANDOFF.md`.
 - **`Settings.Validate` refuses to boot on an empty `TENANT_SECRET_ENC_KEY`
   outside local.** `sha256("")` is a valid AES-256 key, so an unset key encrypts
   successfully with a constant anyone can compute — silent and wrong. This
