@@ -76,6 +76,14 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	provisionCtrl := controllers.NewProvisionController(logger, provisionSvc, credSvc, tenantSvc, CallerFrom)
 	groupsCtrl := controllers.NewGroupsController(logger, service.NewGroupService(logger, pdb), tenantSvc, CallerFrom)
 
+	// Vehicle sharing (docs/plans/05-vehicle-sharing.md). This half is the
+	// display gate only — which owners the tenant may sign for — and it asks
+	// accounts-api live rather than reading users.shared_account_signer_address,
+	// which is empty for every owner whose account kaufmann-oracle created.
+	sharedSignerSvc := service.NewSharedSignerService(logger,
+		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint), credSvc)
+	sharingCtrl := controllers.NewSharingController(logger, sharedSignerSvc, tenantSvc, CallerFrom)
+
 	// Email invitations (docs/plans/04-invitations-into-tenancy.md, P1): the
 	// records and the dispatch both live here so the plaintext token exists in
 	// exactly one service's memory. Unconfigured Postmark means invitations
@@ -215,6 +223,11 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// token authorizes, the trusted caller asserts the wallet, and caller
 	// scope is checked against the resolved tenant inside the service.
 	v1.Post("/invitations/accept", invitationsCtrl.Accept)
+
+	// Which of the caller's vehicle owners this tenant may sign for — the
+	// per-vehicle share button's gate. A POST because the input is a list whose
+	// length is the caller's fleet, not a query parameter; nothing is written.
+	v1.Post("/tenants/:tenantId/shareable-owners", sharingCtrl.ShareableOwners)
 
 	v1.Get("/tenants/:tenantId/groups", groupsCtrl.ListGroups)
 	v1.Get("/tenants/:tenantId/vehicle-groups", groupsCtrl.ListVehicleGroups)
