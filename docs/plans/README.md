@@ -14,6 +14,7 @@ finished.
 |---|---|
 | [01-groups-into-tenancy.md](01-groups-into-tenancy.md) | Agreed, not started |
 | [02-vehicle-memberships.md](02-vehicle-memberships.md) | Steps 1–5 shipped 2026-08-14; step 6 next |
+| [05-vehicle-sharing.md](05-vehicle-sharing.md) | Planned 2026-08-18, not started |
 
 ## Writing one
 

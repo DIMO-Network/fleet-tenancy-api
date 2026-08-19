@@ -55,6 +55,31 @@ type Settings struct {
 	AttestAPIURL url.URL `yaml:"ATTEST_API_URL"`
 	ChainID      int64   `yaml:"CHAIN_ID"`
 
+	// On-chain vehicle sharing (docs/plans/05-vehicle-sharing.md). A share is
+	// one SACD setPermissions0 call, sent as a UserOp from the vehicle owner's
+	// kernel account and signed by the acting tenant's signer key — the same
+	// mechanism kaufmann-oracle uses to re-share a transferred vehicle, pointed
+	// at a grantee the customer chooses.
+	//
+	// SacdAddress is the DIMO SACD contract. It is NOT the registry and not the
+	// VehicleId NFT: three different addresses, and setPermissions0 sent to the
+	// wrong one fails in ways that look like a permissions bug. Polygon prod is
+	// 0x3c152B5d96769661008Ff404224d6530FCAC766d.
+	//
+	// RPCURL and BundlerURL carry API keys and are secrets. The bundler URL is
+	// used as the paymaster URL too, matching kaufmann's fleet client — ZeroDev
+	// serves both from one project URL.
+	//
+	// None are boot-required yet. The endpoint that needs them does not exist
+	// until docs/plans/05-vehicle-sharing.md step 2, and this service must keep
+	// booting — an outage here is an outage in both apps. SharingConfigured
+	// reports whether the feature can run; the step-2 PR is what makes an
+	// unset value refuse to boot, once the chart has been syncing the secrets
+	// for a release.
+	SacdAddress string  `yaml:"SACD_ADDRESS"`
+	RPCURL      url.URL `yaml:"RPC_URL"`     // secret
+	BundlerURL  url.URL `yaml:"BUNDLER_URL"` // secret
+
 	// TrustedCallerKeys is the pre-shared key set that gates /v1, formatted
 	// "name:key,name:key". The name is for logging and revocation only; it is
 	// the key that authenticates.
@@ -112,6 +137,23 @@ type Settings struct {
 // fleet-lite-app's definition.
 func (s *Settings) IsLocal() bool {
 	return s.Environment == "local"
+}
+
+// SharingConfigured reports whether on-chain vehicle sharing has everything it
+// needs to run. Every input is required: without the SACD address there is no
+// contract to call, and without the RPC and bundler URLs there is no way to
+// send the UserOp.
+//
+// Callers use this to answer "is this feature on?" in one place rather than
+// re-deriving it from four fields — and, until the step-2 PR makes these
+// boot-required, so the share endpoint can fail with a named error instead of
+// a nil-pointer panic in an unconfigured environment.
+func (s *Settings) SharingConfigured() bool {
+	return s.SacdAddress != "" &&
+		s.VehicleNftAddress != "" &&
+		s.RPCURL.String() != "" &&
+		s.BundlerURL.String() != "" &&
+		s.ChainID != 0
 }
 
 // Validate rejects configurations that would silently do the wrong thing.

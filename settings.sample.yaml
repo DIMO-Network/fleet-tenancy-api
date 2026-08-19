@@ -41,6 +41,20 @@ ACCOUNTS_API_ENDPOINT: https://accounts.dimo.org
 ATTEST_API_URL: https://attest.dimo.zone
 CHAIN_ID: 137
 
+# On-chain vehicle sharing (docs/plans/05-vehicle-sharing.md). Not boot-required:
+# unset means the feature is off and the job queue never starts, which is what
+# every environment looks like until the SACD and bundler settings are in place.
+#
+# SACD_ADDRESS is the DIMO Service Access Control Document contract — a separate
+# contract from both the registry and the VehicleId NFT above. The Polygon
+# mainnet value is 0x3c152B5d96769661008Ff404224d6530FCAC766d.
+#
+# RPC_URL and BUNDLER_URL carry API keys; the bundler URL doubles as the
+# paymaster URL (ZeroDev serves both from one project URL).
+SACD_ADDRESS: ""
+RPC_URL: ""
+BUNDLER_URL: ""
+
 # Email invitations (docs/plans/04-invitations-into-tenancy.md). Key names
 # match fleet-lite-app's — the flow moved here. None are boot-required: an
 # empty Postmark token records invites with emailSent=false, and an empty
