@@ -25,6 +25,7 @@ import (
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/controllers"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/gateway"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/service"
+	"github.com/DIMO-Network/fleet-tenancy-api/internal/sharing"
 	"github.com/DIMO-Network/shared/pkg/db"
 	jwtware "github.com/gofiber/contrib/jwt"
 	"github.com/gofiber/fiber/v2"
@@ -34,7 +35,13 @@ import (
 
 var appCommitHash string
 
-func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, pdb *db.Store) *fiber.App {
+// App builds the /v1 surface.
+//
+// shareQueue may be nil: vehicle sharing is off in environments without the
+// SACD and bundler settings, and this service must serve /v1/authz regardless —
+// both apps fail closed on it.
+func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, pdb *db.Store,
+	shareQueue *sharing.Queue) *fiber.App {
 	appCommitHash = commitHash
 
 	app := fiber.New(fiber.Config{
@@ -50,7 +57,8 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 
 	tenantSvc := service.NewTenantService(logger, pdb)
 	memberSvc := service.NewMemberService(logger, pdb)
-	authzCtrl := controllers.NewAuthzController(logger, service.NewAuthzService(logger, pdb), tenantSvc, CallerFrom)
+	authzSvc := service.NewAuthzService(logger, pdb)
+	authzCtrl := controllers.NewAuthzController(logger, authzSvc, tenantSvc, CallerFrom)
 	resolveCtrl := controllers.NewResolveController(logger, tenantSvc, CallerFrom)
 	membersCtrl := controllers.NewMembersController(logger, memberSvc, tenantSvc, CallerFrom)
 	entitlementsCtrl := controllers.NewEntitlementsController(logger,
@@ -76,13 +84,22 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	provisionCtrl := controllers.NewProvisionController(logger, provisionSvc, credSvc, tenantSvc, CallerFrom)
 	groupsCtrl := controllers.NewGroupsController(logger, service.NewGroupService(logger, pdb), tenantSvc, CallerFrom)
 
-	// Vehicle sharing (docs/plans/05-vehicle-sharing.md). This half is the
-	// display gate only — which owners the tenant may sign for — and it asks
-	// accounts-api live rather than reading users.shared_account_signer_address,
-	// which is empty for every owner whose account kaufmann-oracle created.
+	// Vehicle sharing (docs/plans/05-vehicle-sharing.md).
+	//
+	// The signer gate asks accounts-api live rather than reading
+	// users.shared_account_signer_address, which is empty for every owner whose
+	// account kaufmann-oracle created — see SharedSignerService.
+	//
+	// shareQueue is nil when sharing is unconfigured. The routes are registered
+	// either way: an unconfigured environment answers 503, which tells the
+	// caller the feature is off, where a 404 would look like a version skew.
 	sharedSignerSvc := service.NewSharedSignerService(logger,
 		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint), credSvc)
-	sharingCtrl := controllers.NewSharingController(logger, sharedSignerSvc, tenantSvc, CallerFrom)
+	shareAuthorizer := service.NewShareAuthorizer(logger, pdb,
+		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint),
+		sharedSignerSvc, credSvc, settings)
+	sharingCtrl := controllers.NewSharingController(logger, sharedSignerSvc, authzSvc,
+		shareAuthorizer, shareQueue, tenantSvc, CallerFrom)
 
 	// Email invitations (docs/plans/04-invitations-into-tenancy.md, P1): the
 	// records and the dispatch both live here so the plaintext token exists in
@@ -228,6 +245,12 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// per-vehicle share button's gate. A POST because the input is a list whose
 	// length is the caller's fleet, not a query parameter; nothing is written.
 	v1.Post("/tenants/:tenantId/shareable-owners", sharingCtrl.ShareableOwners)
+	// The share itself: 202 and a job id, because it waits on a bundler for
+	// longer than an HTTP request should. Status is a sibling GET rather than a
+	// path under the job id — the tenant scope check needs the tenant, and the
+	// job id alone is a sequential integer anyone could walk.
+	v1.Post("/tenants/:tenantId/vehicles/:tokenId/share", sharingCtrl.ShareVehicle)
+	v1.Get("/tenants/:tenantId/vehicles/:tokenId/share/status", sharingCtrl.ShareStatus)
 
 	v1.Get("/tenants/:tenantId/groups", groupsCtrl.ListGroups)
 	v1.Get("/tenants/:tenantId/vehicle-groups", groupsCtrl.ListVehicleGroups)

@@ -21,3 +21,40 @@ type ShareableOwnersInput struct {
 type ShareableOwnersResult struct {
 	Owners []string `json:"owners"`
 }
+
+// ShareVehicleInput is a request to grant a wallet SACD permissions on a
+// vehicle.
+type ShareVehicleInput struct {
+	// Grantee is the wallet receiving the permissions.
+	Grantee string `json:"grantee"`
+
+	// DurationDays is how long the grant lasts. Zero or absent means
+	// indefinite, which SACD expresses as forty years — the same convention as
+	// the onboarding mint.
+	DurationDays int `json:"durationDays"`
+
+	// Wallet is the member making the request, used for the capability check
+	// and the audit trail. Supplied by the calling app from its session rather
+	// than inferred here: this service authenticates applications, and the
+	// human behind the request is the app's to assert.
+	Wallet string `json:"wallet"`
+}
+
+// ShareVehicleResult is the 202 body. The share is asynchronous — it waits on a
+// bundler — so the caller gets a job id and polls.
+type ShareVehicleResult struct {
+	JobID int64 `json:"jobId"`
+}
+
+// ShareStatus reports on a queued share.
+//
+// The shape mirrors kaufmann-oracle's single-job TransferJobStatus rather than
+// its per-VIN VinsStatusResult: success is the IsSuccessful boolean, never a
+// "Success" string. The two shapes coexist in kaufmann and confusing them is a
+// recorded trap, so this one is deliberately the boolean.
+type ShareStatus struct {
+	JobID        int64    `json:"jobId"`
+	State        string   `json:"state"`
+	IsSuccessful bool     `json:"isSuccessful"`
+	Errors       []string `json:"errors"`
+}
