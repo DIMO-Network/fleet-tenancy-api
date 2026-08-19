@@ -4,6 +4,9 @@ Written 2026-08-06. Read this plus
 `fleet-lite-app/docs/operator-tenancy/` (the full design set — it is gitignored
 in this repo until the weaknesses it documents are fixed).
 
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-19*.
+Start there; this file is long and appends newest-last.
+
 ## The goal in one paragraph
 
 Two unrelated multi-tenant systems (`fleet-lite-app`, `kaufmann-oracle`) become
@@ -1222,7 +1225,7 @@ tests over the ambiguous cases.
 - All three encryption keys differ, so the backfill decrypts per source and
   re-encrypts. All 11 kaufmann credentials decrypt cleanly with the real key
 
-## PICK UP HERE — session handoff, 2026-08-14 ~03:00 UTC
+## Session handoff, 2026-08-14 ~03:00 UTC — SUPERSEDED, kept for the record
 
 **P5a is complete, deployed to both apps, and its exit criterion is met.**
 Everything the previous handoff listed as open or unverified is resolved.
@@ -2154,3 +2157,110 @@ rather than retargeting them, and GitHub refuses to reopen a PR whose base
 branch is gone. #51 was lost that way and reopened as #56. Retarget children to
 `main` before merging the parent, or do not delete base branches until the
 whole stack has landed.
+
+## PICK UP HERE — session handoff, 2026-08-19 ~18:30 UTC
+
+Start with **step 1 of [`plans/07-vehicle-roster.md`](plans/07-vehicle-roster.md)**.
+It is an open production bug, it is small, and it is independent of the rest of
+that plan.
+
+### What happened
+
+A TRAST admin (`jreate@me.com`, wallet `0x6272d24f…`) saw **zero vehicles** in
+fleet-lite while TRAST had nine entitled vehicles and nine active commercial
+memberships. Nothing errored anywhere.
+
+Two causes, stacked:
+
+1. **The nightly sync skips every credential-less tenant.**
+   `fleet-lite-app/api/cmd/fleet-lite-app/sync_vehicles.go:60` builds its own
+   `VehicleService` and never calls `UseTenancy` — the only call is in
+   `api/internal/app/app.go:118`, the web server. So `syncEntitledVehicles`
+   hits its *"no tenancy client is configured"* guard
+   (`api/internal/service/vehicle.go:247`), the loop logs
+   `sync vehicles, skipping tenant`, and **the run still exits 0**.
+2. **A cached set under live gates.** `fleets_lite.vehicles` is a nightly cache;
+   the membership and group-scope gates resolve from this service on 60s TTLs
+   (`GROUPS_FROM_TENANCY=true` in prod). TRAST's only local row was `190171` —
+   an entitlement *revoked* on 2026-08-18 — and the live membership gate
+   correctly excluded it. Cached-set ∩ live-gate = ∅.
+
+Had both been stale you would have seen one wrong vehicle. Had both been live,
+nine. **Zero is the artifact of mixing**, and it is silent.
+
+### What was already done — do not redo
+
+- **TRAST was repaired by hand**, 2026-08-19 18:03 UTC, via
+  `POST /tenants/f004fc62-752b-4d87-9de9-c20c56e67248/sync-vehicles` with an
+  end-user JWT. Verified: nine rows, `190171` pruned, and the local set now
+  matches entitlements and memberships exactly.
+- **This is a one-time repair.** The cron errors before it writes, so it does
+  not re-break TRAST — it simply never updates it. TRAST stays correct until the
+  next entitlement change and then drifts again, silently.
+- Note the plan's evidence section quotes TRAST's *broken* state. That is
+  history, not a live reading. Query it now and you will find nine healthy rows.
+
+### Step 1, concretely
+
+Three changes; the second matters most.
+
+1. Wire `vehicleSvc.UseTenancy(tenancyAPI)` in `sync_vehicles.go`, as `app.go`
+   does. While there, audit the same file for other by-hand-built services
+   missing wires — `UseMemberships` and the group index are constructed the same
+   way and were not checked.
+2. **A skipped tenant must exit non-zero.** Count skips, log each with its
+   reason, fail the run. The wiring omission cost three days of a customer
+   seeing an empty fleet *because the CronJob stayed green*. Fixing only (1)
+   leaves the next omission to cost the same again.
+3. Add a `vehicles-diff` command here, alongside `invitations-diff` and
+   `groups-diff`: per explicit-mode tenant, compare this service's active
+   entitled set against fleet-lite's local rows, reporting
+   `agree / missing_local / extra_local`. From 2026-08-18 it would have printed
+   `missing_local=9, extra_local=1` for TRAST.
+
+### Verifying
+
+The CronJob is `fleet-lite-app-sync-vehicles` (`0 3 * * *`). Its job pods are
+garbage-collected quickly, so **do not plan on reading yesterday's logs** — that
+is why the skip was never seen. Trigger one by hand instead:
+
+```sh
+kubectl -n prod create job --from=cronjob/fleet-lite-app-sync-vehicles \
+  sync-vehicles-manual-$(date +%s)
+kubectl -n prod logs -l job-name=sync-vehicles-manual-... --tail=200 | \
+  grep -iE 'skipping|synced|complete'
+```
+
+Before the fix TRAST is skipped and the run still succeeds; after it, TRAST
+syncs and any genuine skip fails the job.
+
+### Reaching prod data
+
+An SSH tunnel to the prod RDS is how all of the above was measured:
+
+```sh
+ssh dimo-database-prod          # ~/.ssh/config, LocalForward 5430 -> RDS:5432
+```
+
+Per-service DB users are scoped to their own schema — kaufmann's credentials
+cannot read `fleet_tenancy_api` or `fleets_lite`. Take each service's own
+credentials from its k8s secret:
+
+```sh
+kubectl -n prod get secret fleet-tenancy-api-secret \
+  -o jsonpath='{.data.DB_USER}' | base64 -d      # and .data.DB_PASSWORD
+# fleet-lite-app-secret likewise; then psql -h localhost -p 5430 \
+#   -d fleet_tenancy_api | fleets_lite  (PGSSLMODE=require)
+```
+
+Tables live in a schema named for the database, not `public` — qualify as
+`fleet_tenancy_api.tenants`, `fleets_lite.vehicles`, `kaufmann_oracle.vins`.
+
+### What is NOT started
+
+Steps 2–5 of plan 07 — the freshness fix, the roster table here, the reader
+cutover, and shrinking `vins`. Plan 06 (signer-key consolidation) is also
+unstarted; its step 1 is read-only and cheap.
+
+**Nothing about vehicle sharing has been exercised yet** — still no UserOp ever
+sent. Unchanged by this session.
