@@ -169,14 +169,37 @@ deterministic skip and double the log. Both now match `groups-diff`: `0` and
 three days. And `vehicles-diff` got its own CronJob at 03:30, half an hour after
 the sync it gates.
 
-Verified against prod the same day. The bug was reproduced first on the deployed
-image — TRAST skipped, `synced=612 skipped_tenants=1`, job `exitCode=0`,
-condition `Complete` — then the fixed binary run against prod gave
-`synced=621 skipped_tenants=0`, the difference being exactly TRAST's nine, with
-`vehicles-diff` clean at `agree=9`. The failure path was confirmed too: a run
-made before identity-api was reachable exited 1, logged at error level and named
-the tenant. The chart values are the one part still unverified — they cannot be
-until it deploys.
+Verified against prod the same day, before and after release. The bug was
+reproduced first on the deployed image — TRAST skipped,
+`synced=612 skipped_tenants=1`, job `exitCode=0`, condition `Complete` — and
+then, on `v0.16.0` in-cluster on the real CronJob,
+`TRAST synced=9, skipped_tenants=0, synced=621`, job `Complete`, with
+`vehicles-diff` clean at `entitled=9 local=9 agree=9`. The failure path was
+confirmed too: a run made before identity-api was reachable exited 1, logged at
+error level and named the tenant.
+
+**The chart values are verified, by a real failure rather than a synthetic one.**
+Merging shipped the chart to prod while leaving the binary behind (see below), so
+for half an hour prod ran the new CronJob against an image with no `vehicles-diff`
+subcommand. It exited 2, the job went `Failed`, **exactly one pod was created** —
+`backoffLimit: 0` holding — and it persisted on the three-day TTL instead of
+being collected within the hour. That is precisely the property the incident
+lacked.
+
+**Merging does not deploy this app, and that is a trap worth knowing before the
+next change that touches both code and chart.** `values.yaml` is bumped by
+`buildpushdev` on merge to main, but prod's image tag lives in
+`values-prod.yaml` and only moves when a `v*` tag is pushed
+(`.github/workflows/buildpushprod.yml`). `cronJobs` has no prod override, so
+merging shipped the *chart* to prod at once while the *binary* stayed on the
+previous release — a `vehicles-diff` CronJob firing nightly at 03:30 against an
+image that had never heard of it. Released as `v0.16.0` to close the gap.
+
+One more, for whoever edits the chart next: the version-bump workflow
+round-trips `values.yaml` through a YAML parser and writes it back, **stripping
+every comment in the file**. Two explanatory comments were gone one commit after
+they landed. Durable rationale belongs in `templates/cronjobs.yaml`, which is
+not rewritten (fleet-lite-app#135).
 
 ### 2. Stop the freshness mixing
 
