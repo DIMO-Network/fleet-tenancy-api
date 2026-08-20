@@ -28,6 +28,11 @@ type fakeIdentity struct {
 	// on the same fake so there is one IdentityAPI stand-in.
 	owners    map[int64]string
 	ownersErr error
+
+	// The roster sweep's bulk read, keyed by client id. Same reasoning: one
+	// stand-in for the whole IdentityAPI surface.
+	privileged    map[string][]gateway.RosterVehicle
+	privilegedErr error
 }
 
 func (f *fakeIdentity) RedirectURIForClientID(string) (string, error) { return f.uri, f.err }
@@ -40,6 +45,13 @@ func (f *fakeIdentity) VehicleOwner(tokenID int64) (string, error) {
 		return "", gateway.ErrVehicleNotFound
 	}
 	return owner, nil
+}
+
+func (f *fakeIdentity) PrivilegedVehicles(clientID string) ([]gateway.RosterVehicle, error) {
+	if f.privilegedErr != nil {
+		return nil, f.privilegedErr
+	}
+	return f.privileged[clientID], nil
 }
 
 func credService(t *testing.T, settings *config.Settings) (*CredentialService, context.Context) {

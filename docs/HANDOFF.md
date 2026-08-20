@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus
 `fleet-lite-app/docs/operator-tenancy/` (the full design set — it is gitignored
 in this repo until the weaknesses it documents are fixed).
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-19 20:00 UTC*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 02:00 UTC*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -2272,7 +2272,7 @@ sent. Unchanged by this session.
 
 ---
 
-## PICK UP HERE — session handoff, 2026-08-19 ~20:00 UTC
+## Session handoff, 2026-08-19 ~20:00 UTC — step 1, kept for the release record
 
 Step 1 of [`plans/07-vehicle-roster.md`](plans/07-vehicle-roster.md) is done,
 released and verified in prod. **Start with step 2** — the freshness fix — or
@@ -2406,3 +2406,91 @@ appear, and that case needs a test or the bug just moves somewhere harder to see
 
 **Nothing about vehicle sharing has been exercised yet** — still no UserOp ever
 sent. Unchanged by this session.
+
+---
+
+## PICK UP HERE — session handoff, 2026-08-20 ~02:00 UTC
+
+Plan 07 steps 1–3 are done. **Two things are waiting on a human**, both
+deliberate:
+
+1. **Cut `v0.17.0` in fleet-lite-app** to release step 2. It is merged and
+   verified but prod still runs `v0.16.0`, so every operator-managed customer's
+   vehicle list is still resolved the old way.
+2. **Run `scripts/roster-diagnostic.sh` once and read it**, then deploy step 3
+   and run `reconcile-vehicles -dry-run` before letting the CronJob write.
+
+### Where each step stands
+
+| | state |
+|---|---|
+| 1. Trustworthy refresh, loud failures | released `v0.16.0`, verified in prod |
+| 2. Stop the freshness mixing | fleet-lite-app#136 merged, verified, **not released** |
+| 3. Stand up the roster | built here, **not deployed** |
+| 4. Cut the readers over | not started |
+| 5. Shrink `vins` | not started |
+
+### Step 3, as built
+
+`vehicles` keyed by `vehicle_token_id`, `vehicle_owner_changes` beside it, a
+`reconcile-vehicles` command, and a 04:00 CronJob with `backoffLimit: 0` and a
+three-day TTL.
+
+**The population is the union of privileged sets over every licence in
+`tenant_credentials`**, not `vehicle_entitlements`. Entitlements cover
+explicit-mode tenants only and would have left out the 178 self-serve vehicles —
+a roster with a permanent hole, which is what disqualified kaufmann. Sweeping
+licences also self-heals as tenants come and go and needs no cross-database
+access.
+
+Read `roster.go`'s comments before changing any of it; the three rules that are
+easy to "simplify" and must not be are owner-is-re-read-and-logged,
+VIN/plate-fill-forward-never-clear, and a-partial-sweep-marks-nothing-unseen.
+
+### Before the first production run
+
+```sh
+# 1. the diagnostic, once, read by a human
+export PGHOST=localhost PGPORT=5430 PGSSLMODE=require   # after: ssh dimo-database-prod
+export KAUF_USER=… KAUF_PASS=… FL_USER=… FL_PASS=…      # from each service's k8s secret
+./scripts/roster-diagnostic.sh
+
+# 2. then, once deployed, a dry run before the cron ever writes
+kubectl -n prod create job --from=cronjob/fleet-tenancy-api-reconcile-vehicles \
+  reconcile-dryrun-$(date +%s)      # edit the job to add -dry-run, or run it by hand
+```
+
+Expected from the diagnostic: **3** owner contradictions (192379, 192400,
+192401 — Maxus T60s, kaufmann says `0xDA13fE28…`, the chain says `0x97B8bA44…`),
+**27** kaufmann-only tokens, **178** fleet-lite-only. The script prints those
+expectations inline so a mismatch is obvious.
+
+### What was verified, and what was not
+
+Verified: the migration applies and reverses cleanly; nine roster tests run
+against a real postgres; the identity-api query was run against **prod** through
+the gateway and returned **553 vehicles over six pages**, every one with owner,
+`mintedAt` and definition parsed, no repeated token ids, empty client id
+refused. 553 matches what fleet-lite's sync reports for that licence, so the
+pagination is complete rather than truncated.
+
+Not verified: `reconcile-vehicles` has never run against the prod database. The
+SSH tunnel's cloudflared cert expires after four minutes and re-authenticating
+is interactive, so the prod DB was unreachable for the second half of this
+session. That is why the dry run above is a step and not a formality.
+
+### A trap that bit twice today
+
+`cronjobs.yaml` in **this** chart used Helm's `default` for numeric overrides,
+so `backoffLimit: 0` was silently replaced by 1. fleet-lite's chart had already
+been fixed for exactly this; this one had not. Ported the `hasKey` form and the
+reasoning.
+
+Related, and the reason chart rationale keeps moving into templates: the
+version-bump workflow round-trips `values.yaml` and **strips every comment**.
+
+### Still true, unchanged by this session
+
+**Nothing about vehicle sharing has been exercised** — still no UserOp ever
+sent. Plan 06 (signer-key consolidation) is unstarted; its step 1 is read-only
+and cheap.

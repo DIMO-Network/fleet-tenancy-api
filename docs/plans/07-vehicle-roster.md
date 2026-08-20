@@ -201,7 +201,7 @@ every comment in the file**. Two explanatory comments were gone one commit after
 they landed. Durable rationale belongs in `templates/cronjobs.yaml`, which is
 not rewritten (fleet-lite-app#135).
 
-### 2. Stop the freshness mixing
+### 2. Stop the freshness mixing — DONE 2026-08-19, merged, not yet released
 
 Resolve the set and its gates together, here: entitled ∩ active memberships ∩
 group scope. `fleets_lite.vehicles` stops being authoritative for set membership
@@ -215,7 +215,32 @@ into nine vehicles with thin metadata.
 the bug somewhere harder to see — the set will be provably correct while the
 response is still short. Not done unless the missing-row case has a test.
 
-### 3. Stand up the roster, reconciled from the chain
+**Shipped in fleet-lite-app#136**, merged 2026-08-19, **not yet released** —
+prod runs `v0.16.0` until a `v*` tag is cut. No new endpoint was needed here:
+all three gates were already exposed and already called, and the mixing existed
+only because the set came from a different place than the gates. So this too
+landed entirely in fleet-lite-app.
+
+`mergeResolvedVehicles` is a pure function precisely so the missing-row case is
+a test rather than an intention — `TestMergeResolvedVehiclesMissingRow`, plus
+the all-missing case a freshly-entitled customer hits before any sync has run.
+`GetVehicle` got the same treatment; its 404 on an entitled-but-uncached token
+was the single-vehicle face of the same bug.
+
+**One thing this step nearly got wrong, worth carrying forward.** The membership
+gate and group index are both cached for 60s. Reading the entitled set live
+against them would have reintroduced the identical mixing with the staleness on
+the other foot — a fresh set filtered by stale gates. The entitled read is
+therefore cached at the same TTL, and `entitledTTL` is asserted equal to
+`membershipTTL` in a test rather than left to a comment. Any future leg of this
+intersection must age with the others.
+
+Verified against prod: for TRAST, `RESOLVED_COUNT=9` with
+`MEMBERSHIP_ENFORCED=true ACTIVE_COUNT=9` — the intersection genuinely runs
+rather than passing through — and an empty group scope resolved to 0 against
+real group data.
+
+### 3. Stand up the roster, reconciled from the chain — BUILT 2026-08-19, not deployed
 
 A `vehicles` table here keyed by `vehicle_token_id`, populated and refreshed from
 identity-api, holding owner, definition, `minted_at`, VIN and plate. Reconciliation
@@ -229,6 +254,54 @@ kaufmann-only tokens are diagnostic and should be read by a human once.
 **Cost if wrong:** seeding from `vins` imports the three bad owners as truth and
 launders a known error into the new source of truth. Seed from the chain, and
 diff against both existing tables as a check rather than a source.
+
+**Built 2026-08-19 (fleet-tenancy-api), not yet deployed.** `vehicles` keyed by
+`vehicle_token_id`, `vehicle_owner_changes` beside it, a `reconcile-vehicles`
+command and a 04:00 CronJob.
+
+**The population is the union of privileged sets over every licence in
+`tenant_credentials`** — not `vehicle_entitlements`. Entitlements cover
+explicit-mode tenants only and would have left out the 178 vehicles belonging to
+self-serve tenants' own licences: a roster with a permanent hole, which is
+exactly what disqualified kaufmann from holding it. Sweeping licences also
+self-heals as tenants come and go, and needs no cross-database access.
+
+Three decisions the plan did not spell out, each with a test:
+
+- **Owner is re-read and compared every run**, and a change is written to
+  `vehicle_owner_changes` as well as applied. Without the log the job would
+  silently correct the three known-wrong owners and leave nothing to show it
+  happened, so the next unexplained transfer would be as invisible as this one.
+- **VIN and plate are filled forward, never cleared.** identity-api serves
+  neither, and kaufmann writes plates from the Chilean registry — so for that
+  field this table is a consumer. A wholesale upsert would blank a known plate
+  nightly: this plan's own failure mode, pointed the other way.
+- **A partial sweep never marks anything unseen.** If a licence fails, the
+  vehicles behind it are indistinguishable from vehicles nobody can see any
+  more, and stamping them would record an identity-api outage as a fleet
+  change. The run exits non-zero instead. Vehicles genuinely gone are stamped,
+  never deleted — losing sight of one is usually a revoked SACD, and the row is
+  the only record we ever knew it.
+
+**The diagnostic could not live in the service.** Each service's DB user is
+scoped to its own schema, so `fleet_tenancy_api` cannot read `fleets_lite` or
+`kaufmann_oracle` — a deliberate isolation property not worth weakening for a
+one-time read. It is `scripts/roster-diagnostic.sh`, run from a workstation
+holding all three credentials; it writes nothing and prints the contradictions,
+the kaufmann-only tokens and the roster's coverage gaps with the expected counts
+inline.
+
+**Also fixed here:** this chart's `cronjobs.yaml` still used Helm's `default`
+for numeric overrides, so `backoffLimit: 0` would have been silently replaced by
+1 — the same trap fleet-lite's chart documents. Ported the `hasKey` form and the
+reasoning with it.
+
+Verified before deploying: the migration applies and reverses cleanly; nine
+service tests run against a real database; and the identity-api query was run
+against prod through the gateway, returning **553 vehicles over six pages** with
+owner, `mintedAt` and definition parsed for every one, no repeated token ids,
+and an empty client id refused. 553 is the same count fleet-lite's sync reports
+for that licence, so the pagination is complete rather than truncated.
 
 ### 4. Cut the readers over
 
