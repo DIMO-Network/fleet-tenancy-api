@@ -2730,6 +2730,50 @@ Three properties that are tests rather than intentions:
 5. Then `fleets_lite.vehicles` narrows to app-local columns, and step 5 drops
    `owner` / `minted_at` from `kaufmann_oracle.vins`.
 
+### The DIMO login challenge is flaky — found 2026-08-20, fixed in both repos
+
+Worth knowing before it is diagnosed a third time as a bad credential.
+
+`fleet-lite-app-groups-diff` failed at 06:45 with `submit_challenge` 400
+**"Could not verify signature"** for tenant `e0cd30da`. That reads exactly like
+a wrong or rotated key. It is not:
+
+- identity-api says that licence has one signer, `0xEb4Fa156…`, enabled
+  `2026-07-29T17:17:15Z` and unchanged since — the tenant's own creation time.
+- A re-run **minted that tenant fine and failed on a different one**.
+- Three runs after that were clean: 6 tenants, 88 groups, `differ=0
+  missing_remote=0`.
+
+So the keys are right, the group mirror is healthy, and the challenge flow is
+unreliable at roughly **one attempt in fourteen**.
+
+**Why a retry is the fix rather than a cover-up:** the challenge is SINGLE-USE.
+`shared/pkg/dimoauth` already retries the two HTTP calls individually
+(`shttp.WithRetry(3)`), which cannot help and may be the cause — re-submitting a
+consumed or unknown `state` is precisely what "could not verify signature" looks
+like from outside. Only a fresh challenge can succeed, and `GetToken` starts one
+on every call. Both repos now retry three times, 250ms apart, and still return
+nil after the last, so a genuinely wrong credential fails in about half a second
+instead of hanging.
+
+Here that is `mintWithRetry` in `internal/service/mint_retry.go`, wired into
+`DeveloperJWT` (the `/v1/tenants/{id}/dimo-token` minter fleet-lite calls for
+managed tenants) and `ValidateCredential` — the second because rejecting a valid
+key a human has just pasted tells them their key is broken when it is not.
+
+**A second, unrelated fault the same investigation surfaced:** `groups-diff`
+returned on the first tenant it could not reach. The walk is ordered by tenant
+name, so a flake took every tenant after it down too, and from the exit code a
+run that verified five tenants and one that verified one were identical. Fixed
+in fleet-lite-app#137 — unreachable tenants are collected, named, counted, and
+still fail the run.
+
+**On retiring jobs.** `mirror-groups` and `groups-diff`, in both caller repos,
+are scaffolding for the groups move: they keep and verify local mirrors that P5
+deletes. They are not dead weight yet — they are the safety net for a migration
+that is not finished — but they retire with the local group tables, and nothing
+else should be built on them.
+
 ### Everything in the previous handoff is still true
 
 The roster is 619 rows reconciling nightly at 04:00, the three T60s read the
