@@ -154,9 +154,18 @@ func (s *CredentialService) DeveloperJWT(ctx context.Context, tenantID string) (
 		return nil, err
 	}
 
-	token := auth.GetToken()
+	// Retried: the login challenge is unreliable and single-use, so a second
+	// call is a fresh attempt rather than the same request repeated. See
+	// mintWithRetry for the evidence that the key is not the problem.
+	token := mintWithRetry(auth, func(attempt int) {
+		s.logger.Warn().Int("attempt", attempt).
+			Str("client_id", cred.ClientID).
+			Str("tenant_id", cred.TenantID).
+			Msg("developer JWT mint failed, retrying with a fresh challenge")
+	})
 	if token == nil {
-		return nil, fmt.Errorf("minting developer JWT for client id %s failed", cred.ClientID)
+		return nil, fmt.Errorf("minting developer JWT for client id %s failed after %d attempts",
+			cred.ClientID, mintAttempts)
 	}
 	minted := &models.MintedToken{
 		Token:              token.Raw,
@@ -210,8 +219,17 @@ func (s *CredentialService) ValidateCredential(clientID, apiKeyPlain string) err
 	if err != nil {
 		return err
 	}
-	if minter.GetToken() == nil {
-		return fmt.Errorf("minting a developer JWT for client id %s failed", clientID)
+	// Retried for a different reason than the mint above: this runs when a
+	// human has just pasted a credential, and rejecting a VALID key because the
+	// challenge flaked tells them their key is wrong when it is not — a lie
+	// that costs a support conversation and invites them to rotate a working
+	// key.
+	if mintWithRetry(minter, func(attempt int) {
+		s.logger.Warn().Int("attempt", attempt).Str("client_id", clientID).
+			Msg("credential validation mint failed, retrying with a fresh challenge")
+	}) == nil {
+		return fmt.Errorf("minting a developer JWT for client id %s failed after %d attempts",
+			clientID, mintAttempts)
 	}
 	return nil
 }
