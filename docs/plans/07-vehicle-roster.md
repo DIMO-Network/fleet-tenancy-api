@@ -388,6 +388,65 @@ It is already what both apps fail closed on, and it now also holds River and a
 gas-spending path. Measure p99 on `/v1/authz` before and after each reader, and
 keep the flag until a full release has run clean.
 
+#### The endpoint exists — `POST /v1/tenants/{tenantId}/vehicle-metadata`
+
+**Served here, not yet released, no caller.** Step 3 stood the table up and the
+plan then said "step 3's endpoint" as though there were one; there was not.
+This is it, and it is the whole of this repo's share of step 4 — the cutover
+itself is a flag and a code path in each reader.
+
+It answers **one** question: given token ids, what are these vehicles? It does
+**not** resolve the set. That is deliberate and it is the load-bearing decision
+of this step:
+
+- The intersection — entitled ∩ active memberships ∩ group scope — already runs
+  in fleet-lite against three endpoints of this service, shipped as step 2 in
+  `v0.17.0`, with the equal-TTL property tested. Re-implementing it behind a new
+  endpoint would put a second opinion about group scope in the codebase, which
+  is the duplication this plan exists to remove — and it would be a *silent*
+  second opinion, since the two would only disagree for members whose scope had
+  just changed.
+- So step 4 changes the **metadata source only**: fleet-lite keeps resolving the
+  set exactly as it does today and swaps `fleets_lite.vehicles` for this call as
+  the thing it joins against. That is a strictly smaller change than the plan's
+  sentence implies, and it is the one the flag can revert cleanly.
+
+Shape, and the reasoning that is not obvious from it:
+
+- **POST with `{"tokenIds": [...]}`, because a real fleet does not fit in a
+  query string.** 619 token ids is several kilobytes of request line and fiber
+  refuses it while reading the request — before any handler or gate runs, with
+  an error that names the read buffer rather than the URL. Same reasoning as
+  `shareable-owners`, and asserted in a test
+  (`TestVehicleMetadataAsQueryStringWouldNotFit`) because "make it a GET, it's a
+  read" is the obvious review note and this is the answer to it.
+- **A token with no roster row is absent from the response, not an error.** The
+  caller must keep its left join: absence means the roster has not seen the
+  vehicle yet — a customer entitled minutes ago, before the 04:00 reconcile —
+  and dropping it from the rendered list would be the empty-fleet incident again
+  one layer down, which is trap 2 of this step. Both the missing-one and
+  missing-all cases are tests here as well as in fleet-lite.
+- **The tenant in the path authorizes the caller, in the ordinary way; it is not
+  a per-vehicle filter.** The roster is keyed by token id alone precisely
+  because owner and definition are properties of a vehicle, not of anybody's
+  relationship to it, so there is no tenant column to filter on and no honest
+  way to invent one. What bounds the endpoint is that the caller must **name**
+  the tokens: no listing, no wildcard, no cursor, so nothing is learnable here
+  that was not already known somewhere it was gated. Worth stating plainly
+  because "tenant-scoped" reads like a data filter and here it is not.
+- Owner comes back EIP-55 checksummed whatever case the row holds, so a caller's
+  string comparison against its own stored address cannot silently miss.
+  `reconciled_at` and `unseen_since` are served too: staleness should be a
+  timestamp the caller can show, not something inferred from absence.
+- 5000 token ids per request, far above the whole 619-row roster — a bound on
+  one request becoming an unbounded query, not a constraint on real use.
+
+**Not done and deliberately not started here:** the readers. fleet-lite behind
+its flag, then kaufmann's b2b-facing reads, then `fleets_lite.vehicles` narrowed
+to app-local columns. Nothing calls this endpoint yet, so releasing it changes
+no behaviour anywhere — which is the point of shipping it separately from the
+first cutover.
+
 ### 5. Shrink `vins` to the device table
 
 Drop `owner` and `minted_at` from `kaufmann_oracle.vins` once nothing reads

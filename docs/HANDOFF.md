@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus
 `fleet-lite-app/docs/operator-tenancy/` (the full design set — it is gitignored
 in this repo until the weaknesses it documents are fixed).
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 02:15 UTC*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 04:30 UTC*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -2533,7 +2533,7 @@ and cheap.
 
 ---
 
-## PICK UP HERE — session handoff, 2026-08-20 ~02:15 UTC
+## Session handoff, 2026-08-20 ~02:15 UTC (superseded — see below)
 
 **Plan 07 steps 1, 2 and 3 are done, released and running in production.**
 Nothing is half-finished and nothing is waiting on a human. Start with **step 4
@@ -2647,3 +2647,89 @@ nothing; it was last run 2026-08-19 22:00 UTC and reported 3 / 27 / 179.
 **Nothing about vehicle sharing has been exercised** — still no UserOp ever
 sent. Plan 06 (signer-key consolidation) is unstarted; its step 1 is read-only
 and cheap.
+
+
+## PICK UP HERE — session handoff, 2026-08-20 ~04:30 UTC
+
+**The step 4 endpoint is written, tested and unreleased. Nothing calls it.**
+Next action is either to release it (a `v*` tag — it changes no behaviour, since
+it has no caller) or to go straight to fleet-lite's cutover behind a flag, which
+needs it released first.
+
+### What this session did
+
+`POST /v1/tenants/{tenantId}/vehicle-metadata` — the read side of step 3's
+roster, which step 4 refers to as "step 3's endpoint" and which did not exist.
+Body `{"tokenIds": [...]}`, response `{"vehicles": [...]}` carrying owner,
+definition, make/model/year, `minted_at`, VIN, plate, `reconciled_at` and
+`unseen_since`.
+
+- `internal/models/vehicle.go`, `internal/service/roster_read.go`,
+  `internal/controllers/roster.go`, route in `internal/app/app.go`.
+- Tests: seven service tests against a real database, two route tests, one
+  controller unit test. `make lint` and `go test ./...` clean.
+- **No migration, no chart change, no new setting.** So the release is a tag and
+  nothing else — and specifically NOT a case of the merge-does-not-deploy trap
+  below, because there is no chart half to ship ahead of the binary.
+
+### The decision inside it, which the plan did not make
+
+**The endpoint does metadata only. It does not resolve the set.** The plan's
+sentence — "fleet-lite's vehicle list resolves set *and* metadata from step 3's
+endpoint" — reads as one call doing both. It should not, and this is worth
+holding onto rather than rediscovering:
+
+fleet-lite already resolves the set from this service, as of step 2 in
+`v0.17.0`: entitled ∩ active memberships ∩ group scope, three endpoints, with
+`entitledTTL == membershipTTL` asserted in a test. A resolving endpoint here
+would be a **second implementation of that intersection**, and the two would
+diverge only for members whose group scope had just changed — silently, and in
+the one direction that matters. So step 4 swaps fleet-lite's *metadata source*
+and leaves its set resolution untouched. Smaller change, cleaner flag revert.
+
+Three properties that are tests rather than intentions:
+
+1. **A token with no roster row is absent from the response, not an error.**
+   Absence means the roster has not seen it yet — entitled minutes ago, before
+   the 04:00 reconcile. The caller must keep its left join and its
+   `MetadataPending`; treating absence as exclusion is the empty-fleet incident
+   one layer down.
+2. **POST, not GET.** 619 token ids in a query string is refused by fiber while
+   reading the request line, before any handler or gate runs, with an error
+   naming the read buffer rather than the URL. Asserted, because "make it a GET,
+   it's a read" is the obvious review note.
+3. **The tenant in the path authorizes the caller and is not a per-vehicle
+   filter.** The roster is keyed by token id alone by design — owner and
+   definition are properties of the vehicle — so there is no tenant column to
+   filter on. What bounds it is that the caller must *name* the tokens: no
+   listing, no wildcard, no cursor. Read that sentence before adding any
+   "list all" convenience to this controller.
+
+### Step 4, what remains
+
+1. Release this (`v*` tag). Zero behaviour change — no caller.
+2. **fleet-lite behind a flag** (`VEHICLE_METADATA_FROM_TENANCY`, or whatever
+   name — the point is the flag). Its `listResolvedVehicles` keeps
+   `resolveTokenSet` exactly as is and swaps the `dbmodels.Vehicles` query for
+   this call; `mergeResolvedVehicles` stays, since the left join is the same
+   left join. Favourites, geofences, TCO and `last_lat/lon/seen` stay local —
+   they are app-local columns and are not in the roster.
+3. **Measure p99 on `/v1/authz` before and after**, as the plan asks. This
+   service is already what both apps fail closed on and now also holds River and
+   a gas-spending path; making it load-bearing for every fleet page render is
+   the real risk in step 4, not the correctness of the join.
+4. Kaufmann's b2b-facing vehicle reads follow, same shape.
+5. Then `fleets_lite.vehicles` narrows to app-local columns, and step 5 drops
+   `owner` / `minted_at` from `kaufmann_oracle.vins`.
+
+### Everything in the previous handoff is still true
+
+The roster is 619 rows reconciling nightly at 04:00, the three T60s read the
+chain's answer here and kaufmann's wrong one there, the 45-vehicle gap is
+bounded and affects nobody, and **no vehicle share has ever been sent**. Plan 06
+step 1 remains read-only and cheap if you want something smaller than a cutover.
+
+The traps list above is unchanged and still the thing to read before deploying:
+merging does not deploy, `Synced/Healthy` is not evidence, the version-bump
+workflow eats comments in `values.yaml`, Helm's `default` eats `0`, and the prod
+DB tunnel's cert lasts four minutes.

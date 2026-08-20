@@ -84,6 +84,15 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	provisionCtrl := controllers.NewProvisionController(logger, provisionSvc, credSvc, tenantSvc, CallerFrom)
 	groupsCtrl := controllers.NewGroupsController(logger, service.NewGroupService(logger, pdb), tenantSvc, CallerFrom)
 
+	// The minted-vehicle roster (docs/plans/07-vehicle-roster.md, step 4). The
+	// same service the reconcile command drives, here serving reads from the
+	// table it maintains; the identity client it carries is the writer's, and
+	// no read path touches it.
+	rosterCtrl := controllers.NewRosterController(logger,
+		service.NewRosterService(logger, pdb,
+			gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint)),
+		tenantSvc, CallerFrom)
+
 	// Vehicle sharing (docs/HANDOFF.md, "Vehicle sharing").
 	//
 	// The signer gate asks accounts-api live rather than reading
@@ -251,6 +260,17 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// job id alone is a sequential integer anyone could walk.
 	v1.Post("/tenants/:tenantId/vehicles/:tokenId/share", sharingCtrl.ShareVehicle)
 	v1.Get("/tenants/:tenantId/vehicles/:tokenId/share/status", sharingCtrl.ShareStatus)
+
+	// What the vehicles in a resolved set ARE — owner, definition, VIN, plate —
+	// read from the roster this service reconciles against the chain nightly.
+	//
+	// The set is NOT resolved here: the caller has already intersected
+	// entitlements, active memberships and group scope, all three answered
+	// above, and this is the metadata join over the result. Registered before
+	// the parameterised /vehicles/:tokenId routes for the same reason the
+	// provision route is: nothing collides today, but "vehicle-metadata" as a
+	// sibling of "vehicles" keeps it that way.
+	v1.Post("/tenants/:tenantId/vehicle-metadata", rosterCtrl.VehicleMetadata)
 
 	v1.Get("/tenants/:tenantId/groups", groupsCtrl.ListGroups)
 	v1.Get("/tenants/:tenantId/vehicle-groups", groupsCtrl.ListVehicleGroups)
