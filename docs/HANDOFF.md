@@ -2883,11 +2883,9 @@ added puts another tenant's whole fleet render on this service with no latency
 signal at all — and it has been load-bearing for `/v1/authz` since 2026-08-11
 under the same blindness, which is the older half of the same debt.
 
-So the next piece of work on this thread is **instrumentation**: a `/metrics`
-endpoint on the `MONITORING_PORT` both charts already set, and a request-latency
-histogram — at minimum on `/v1/authz` and the new `vehicle-metadata` route. Do
-it before cutting over kaufmann's reads or onboarding more managed tenants,
-whichever comes first.
+**That debt is now paid** — see the next section. The p99 the plan asked for can
+be measured from here on; it could not be measured at the moment of the flip,
+and that remains true of that decision.
 
 ### Still true
 
@@ -2896,3 +2894,77 @@ read-only and cheap. The traps list earlier in this file is unchanged — mergin
 does not deploy, `Synced/Healthy` is not evidence, the version-bump workflow
 eats comments in `values.yaml`, Helm's `default` eats `0`, and the prod DB
 tunnel's cert lasts four minutes.
+
+
+## Monitoring — added 2026-08-20, live
+
+fleet-tenancy-api `v0.19.0`, fleet-lite-app `v0.20.0`, plus a dashboard shipped
+in this service's chart. Both services now answer the four golden signals per
+route.
+
+| Signal | Metric |
+|---|---|
+| latency | `http_request_duration_seconds` |
+| traffic | `http_requests_total` |
+| errors | `http_requests_total{status=5xx}` |
+| saturation | `http_requests_in_flight` |
+
+Grafana: **Fleet Services — Golden Signals**, uid `fleet-golden-signals`. One
+dashboard for both services, selected by a `service` variable. A third service
+should extend it rather than add a fourth dashboard.
+
+### What was there before, and why it was worth nothing
+
+fleet-tenancy-api had `MONITORING_PORT` in its chart and **nothing serving it**.
+fleet-lite was worse — it looked instrumented. `shared/pkg/middleware/metrics`
+emits `device_data_api_http_request_count`, named after a different service in
+all ten repos that use it, and labels `path` with `c.Route().Name`, which is
+empty unless a route was explicitly named. Prod served literally one series for
+the whole app:
+
+```
+device_data_api_http_request_count{method="GET",path="",status="200"} 356
+```
+
+No dashboard and no alert rule reads it, in any service. It is left registered —
+nine siblings emit it and diverging buys nothing — but it is not what to chart.
+
+### Four things that are load-bearing, not incidental
+
+1. **The label is the route pattern, never the URL.** `c.Path()` would mint a
+   series per tenant uuid per method per status. Unmatched requests collapse to
+   one `"unmatched"` bucket so a scanner cannot do it either. Both are tests,
+   and both were confirmed in prod.
+2. **The port name `mon-http` is what makes the scrape work.** The prod
+   namespace defaults inbound policy to deny and the cluster's namespace-wide
+   `metrics-port` linkerd Server selects every pod by port NAME. Rename it and
+   you get an empty-bodied proxy 403 that looks like the app rejecting the
+   request — exactly how this chart's webhook port failed once already.
+3. **A request refused at the /v1 gate is labelled `path="/v1"`**, not its real
+   route, because the guard is group middleware and the last route fiber ran is
+   the group's mount path. Verified in prod. That is useful rather than broken:
+   gate rejections are one line on a chart instead of smeared across every
+   route. Do not "fix" it.
+4. **The dashboard ships from this chart, not from `dimo-mon`.** All
+   twenty-three other dashboards live in `cluster-helm-charts/charts/dimo-mon`,
+   which is applied by a manual `helm upgrade mon` that re-renders the whole
+   monitoring stack. A dashboard is not worth that, and one waiting on it is one
+   nobody has. cluster-helm-charts#122 made the sidecar scan `prod`, so a
+   labelled ConfigMap from this chart reaches Grafana through ordinary ArgoCD
+   sync. The `grafana_dashboard: "1"` label is the whole mechanism — without it
+   the ConfigMap is inert and nothing anywhere logs why.
+
+### Verified live rather than assumed
+
+Both pods scrape `up`; `http_requests_total` is arriving from both services;
+the unmatched collapse works against real scanner-shaped probes; the histogram
+carries every request; in-flight returns to zero. Every one of the dashboard's
+13 queries was run against prod Prometheus before merge — which is how the CPU
+and memory panels were caught returning two pods where they should return four,
+because a multi-select renders `pod=~"$job.*"` as `a|b.*` and the alternation
+binds to the whole pattern. Parenthesised to `($job).*`.
+
+The one thing not verified: Grafana's API needs credentials, so registration was
+confirmed as far as the provisioning file in the Grafana pod
+(`/tmp/dashboards/fleet-golden-signals.json`, written by the sidecar) rather
+than by loading the dashboard. Open it and look.
