@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus
 `fleet-lite-app/docs/operator-tenancy/` (the full design set — it is gitignored
 in this repo until the weaknesses it documents are fixed).
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 14:00 UTC*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 16:00 UTC*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -2794,7 +2794,7 @@ workflow eats comments in `values.yaml`, Helm's `default` eats `0`, and the prod
 DB tunnel's cert lasts four minutes.
 
 
-## PICK UP HERE — session handoff, 2026-08-20 ~14:00 UTC
+## Session handoff, 2026-08-20 ~14:00 UTC (superseded — see the end)
 
 **Step 4 is built end to end and released on both sides, with the flag off. The
 next action is one decision, not one commit** — see "the flip" below.
@@ -2896,7 +2896,7 @@ eats comments in `values.yaml`, Helm's `default` eats `0`, and the prod DB
 tunnel's cert lasts four minutes.
 
 
-## Monitoring — added 2026-08-20, live
+## Monitoring — added 2026-08-20, live (reference; the pick-up section is below)
 
 fleet-tenancy-api `v0.19.0`, fleet-lite-app `v0.20.0`, plus a dashboard shipped
 in this service's chart. Both services now answer the four golden signals per
@@ -2968,3 +2968,99 @@ The one thing not verified: Grafana's API needs credentials, so registration was
 confirmed as far as the provisioning file in the Grafana pod
 (`/tmp/dashboards/fleet-golden-signals.json`, written by the sidecar) rather
 than by loading the dashboard. Open it and look.
+
+## PICK UP HERE — session handoff, 2026-08-20 ~16:00 UTC
+
+**Nothing is half-finished and nothing is waiting on a human.** Everything below
+is released, deployed and verified in prod. Pick any of the four next actions.
+
+### Where plan 07 stands
+
+| Step | State |
+|---|---|
+| 1. Trustworthy refresh, loud failures | done — fleet-lite `v0.16.0` |
+| 2. Stop the freshness mixing | done — fleet-lite `v0.17.0` |
+| 3. Stand up the roster | done, live — tenancy `v0.15.0`, 619 rows, nightly 04:00 |
+| 4. Cut the readers over | **fleet-lite done and ON in prod**; kaufmann's reads not started |
+| 5. Shrink `vins` | not started |
+
+`VEHICLE_METADATA_FROM_TENANCY` is `'true'` in prod since 14:17 UTC. It reaches
+**one tenant** — `resolvesFromTenancy` is true only for tenants holding no
+client id of their own, which is TRAST, nine vehicles. Every other tenant is
+self-serve and takes the local path.
+
+### Released this session
+
+| | |
+|---|---|
+| fleet-tenancy-api `v0.16.0` | `POST /v1/tenants/{id}/vehicle-metadata` — the roster read |
+| fleet-tenancy-api `v0.17.0` | developer-JWT mint retry |
+| fleet-tenancy-api `v0.18.0` | roster gains device token ids |
+| fleet-tenancy-api `v0.19.0` | four golden signals + Grafana dashboard in the chart |
+| fleet-lite-app `v0.18.0` | mint retry + groups-diff survives one bad tenant |
+| fleet-lite-app `v0.19.0` | `VEHICLE_METADATA_FROM_TENANCY` (shipped false, since flipped) |
+| fleet-lite-app `v0.20.0` | four golden signals, per route |
+
+All verified on the workload — image tag on the deployment, not ArgoCD's word.
+
+### The one thing that is true and unproven
+
+**No TRAST member has loaded a fleet page since the flip**, so the roster read
+has never run under a real request. Everything upstream is checked — endpoint
+tests, a row-by-row prod comparison showing 0 differences across 609 vehicles,
+all nine of TRAST's vehicles present with device ids, and the same auth helper
+every other tenancy call uses. The first render exercises it:
+
+```sh
+kubectl -n prod logs -l app.kubernetes.io/name=fleet-lite-app \
+  -c fleet-lite-app --since=1h | grep -i "roster metadata"
+```
+
+A failure would appear as an error in both services' logs. **Revert is one line**
+— `VEHICLE_METADATA_FROM_TENANCY: 'false'` in
+`charts/fleet-lite-app/values-prod.yaml`. Not a release.
+
+### Pick one
+
+1. **Watch the first TRAST render**, then measure p99 either side — the plan's
+   own gate, now actually measurable. Grafana: *Fleet Services — Golden
+   Signals*.
+2. **Kaufmann's b2b vehicle reads** — the next reader in step 4, same shape as
+   fleet-lite's: swap the metadata source, keep the set resolution, flag it.
+3. **Plan 06 step 1** — signer-key consolidation, read-only and cheap. Still
+   unstarted, and **no vehicle share has ever been sent**.
+4. **Plan 01 P5b** — drop the local group tables. Still blocked on kaufmann's
+   `access_fleet_groups` FK.
+
+### Lessons from this session that will otherwise be relearned
+
+- **Write the reader before believing the endpoint is done.** Step 3's roster
+  was declared complete and was missing the device ids fleet-lite's list renders
+  from. Only building the consumer surfaced it.
+- **"Could not verify signature" was not a bad credential.** The DIMO login
+  challenge flakes about one attempt in fourteen; the challenge is single-use so
+  only a fresh one can succeed, which is why the retry is correct and not a
+  cover-up. Both repos retry three times now.
+- **A diagnostic that aborts on the first failure verifies almost nothing.**
+  groups-diff walked tenants in name order and one flake took every later tenant
+  with it — a run that checked five and a run that checked one were
+  indistinguishable from the exit code.
+- **Check the deploy mechanism before writing the artifact.** The dashboard went
+  into `dimo-mon` first, where it would have sat undeployed behind a manual
+  cluster-wide `helm upgrade`.
+- **Validate queries against real data.** All 13 dashboard queries were run
+  against prod Prometheus; that is how `pod=~"$job.*"` was caught returning two
+  pods instead of four.
+
+### Traps — unchanged, still the thing to read before deploying
+
+Merging does not deploy code (prod's tag moves on a `v*` tag only) but **does**
+deploy chart changes immediately. ArgoCD `Synced/Healthy` is not evidence the
+code deployed — check the image tag on the workload. The version-bump workflow
+strips every comment from `values.yaml`, so rationale goes in `templates/`.
+Helm's `default` treats `0` as empty. The prod DB tunnel's cloudflared cert
+lasts four minutes.
+
+One addition: **the port name `mon-http` is load-bearing** under the namespace's
+default-deny inbound policy — rename it and the scrape fails with an
+empty-bodied proxy 403 that looks like the app rejecting the request.
