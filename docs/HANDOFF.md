@@ -2838,7 +2838,34 @@ the roster with make, model and a synthetic device id. The 19 tokens fleet-lite
 holds that the roster does not belong to self-serve tenants, which take the
 local path and the flag never touches.
 
-### The flip — one decision, and it is yours
+### The flip is DONE — 2026-08-20 14:17 UTC
+
+`VEHICLE_METADATA_FROM_TENANCY: 'true'` in
+`charts/fleet-lite-app/values-prod.yaml` (fleet-lite-app#139). Option 1 below was
+taken: flip for TRAST now, instrument before the population grows.
+
+Verified after the rollout: the configmap carries `true`, both new pods logged
+*"vehicle metadata resolves from fleet-tenancy-api's roster"*, and neither
+service has logged an error since.
+
+**What is NOT yet verified is the HTTP hop under a real page load**, because
+nobody from TRAST has loaded a fleet page since the flip and the read path only
+runs when they do. Everything upstream of it is checked — the endpoint has
+tests, the roster's prod data was compared row by row, and the auth path is the
+same `do()` helper every other tenancy call already uses. The first TRAST render
+exercises it, and a failure would appear as an error in both services' logs.
+Worth a look at:
+
+```sh
+kubectl -n prod logs -l app.kubernetes.io/name=fleet-lite-app \
+  -c fleet-lite-app --since=1h | grep -i "roster metadata"
+```
+
+**Revert is one line** — set it back to `'false'`. Not a release.
+
+### The debt this took on, deliberately
+
+### The p99 gate that was skipped, and what it costs
 
 The plan says to measure p99 on `/v1/authz` before and after. **That cannot be
 measured today.** `MONITORING_PORT` is set in both charts and nothing serves
@@ -2849,17 +2876,18 @@ decoration.
 In proportion: the concern is this service becoming load-bearing for *every*
 fleet render, and today the flag reaches one tenant and nine vehicles, with a
 steady-state render adding zero calls because the metadata cache fills by
-misses. So either:
+misses. That is why flipping first was the defensible call.
 
-1. **Flip now for TRAST** — `VEHICLE_METADATA_FROM_TENANCY: 'true'` in
-   `charts/fleet-lite-app/values-prod.yaml`, watch that tenant, and instrument
-   before the population grows. Revert is a config flip.
-2. **Instrument first** — a metrics endpoint and a latency histogram in
-   fleet-tenancy-api, then meet the gate as written. Larger, and it is work the
-   service needs eventually regardless: it has been load-bearing for `/v1/authz`
-   since 2026-08-11 with no latency signal at all.
+**It stops being defensible as the population grows.** Every managed customer
+added puts another tenant's whole fleet render on this service with no latency
+signal at all — and it has been load-bearing for `/v1/authz` since 2026-08-11
+under the same blindness, which is the older half of the same debt.
 
-Everything else for step 4 is finished either way.
+So the next piece of work on this thread is **instrumentation**: a `/metrics`
+endpoint on the `MONITORING_PORT` both charts already set, and a request-latency
+histogram — at minimum on `/v1/authz` and the new `vehicle-metadata` route. Do
+it before cutting over kaufmann's reads or onboarding more managed tenants,
+whichever comes first.
 
 ### Still true
 
