@@ -97,3 +97,10 @@ cronJobs:
     schedule: '*/10 * * * *'
     script: |
       /fleet-tenancy-api publish-group-attestations
+  - name: reconcile-vehicles
+    enabled: true
+    schedule: 0 4 * * *
+    backoffLimit: 0
+    ttlSecondsAfterFinished: 259200
+    script: |
+      /fleet-tenancy-api reconcile-vehicles
