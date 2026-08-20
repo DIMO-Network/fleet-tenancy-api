@@ -2857,8 +2857,10 @@ exercises it, and a failure would appear as an error in both services' logs.
 Worth a look at:
 
 ```sh
-kubectl -n prod logs -l app.kubernetes.io/name=fleet-lite-app \
-  -c fleet-lite-app --since=1h | grep -i "roster metadata"
+for p in $(kubectl -n prod get pods -l app.kubernetes.io/name=fleet-lite-app \
+             --field-selector=status.phase=Running -o name); do
+  kubectl -n prod logs "$p" -c fleet-lite-app --since=1h | grep -i "roster metadata"
+done
 ```
 
 **Revert is one line** — set it back to `'false'`. Not a release.
@@ -3012,9 +3014,32 @@ all nine of TRAST's vehicles present with device ids, and the same auth helper
 every other tenancy call uses. The first render exercises it:
 
 ```sh
-kubectl -n prod logs -l app.kubernetes.io/name=fleet-lite-app \
-  -c fleet-lite-app --since=1h | grep -i "roster metadata"
+for p in $(kubectl -n prod get pods -l app.kubernetes.io/name=fleet-lite-app \
+             --field-selector=status.phase=Running -o name); do
+  kubectl -n prod logs "$p" -c fleet-lite-app --since=1h | grep -i "roster metadata"
+done
 ```
+
+**The obvious one-liner does not work**, and fails silently. That label also
+matches the CronJob pods — `groups-diff`, `mirror-groups`, `sync-vehicles`,
+`vehicles-diff` — whose containers are not named `fleet-lite-app`, so
+`kubectl logs -l ... -c fleet-lite-app` aborts on the first one and returns zero
+lines whether or not a render happened. It is this file's own lesson about
+diagnostics that abort on the first failure, reappearing inside this file's
+instructions.
+
+Logs only reach back to the current pods' start, so they cannot answer "has it
+*ever* run". The durable answer is Prometheus, which survives restarts:
+
+```
+sum(http_requests_total{job="fleet-tenancy-api", path=~".*vehicle-metadata.*"})
+```
+
+No series at all means the endpoint has never been called. Checked 2026-08-20
+15:58 UTC: no series — and no `/v1/authz` series either, so nobody has loaded
+any fleet page at all and the absence is not specific to TRAST. Both services'
+metrics begin at 15:08, when v0.19.0/v0.20.0 rolled the pods, so the window
+between the 14:17 flip and 15:03 is unobservable on either side.
 
 A failure would appear as an error in both services' logs. **Revert is one line**
 — `VEHICLE_METADATA_FROM_TENANCY: 'false'` in

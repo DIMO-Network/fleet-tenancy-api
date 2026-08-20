@@ -550,7 +550,51 @@ The p99 gate was consciously skipped rather than met, because it cannot be
 measured: neither service records request latency. That is now the named next
 task on this thread, before kaufmann's reads or any new managed tenant.
 
-**Not done:** kaufmann's b2b-facing vehicle reads, and narrowing
+#### Kaufmann's b2b reads — built, shipped off
+
+`VEHICLE_METADATA_FROM_TENANCY` in kaufmann-oracle, same name and same shape as
+fleet-lite's, defaulting `'false'` in both value files. It moves
+**make/model/year only**, on `GET /v1/fleet/vehicles` and
+`GET /v1/fleet/vehicles/:tokenID`, through one `VehicleMetadataView` so the list
+and the detail view cannot disagree about a vehicle. The set is untouched:
+still `vins.tenant_id` plus the group scope.
+
+Three fields were deliberately left local, and the reasons are not
+interchangeable:
+
+- **`owner`.** The console compares `vins.owner` against identity to decide
+  whether to fire `PATCH /v1/fleet/vehicles/{tokenID}/owner`. Serving the
+  roster's owner would compare two values both reconciled from identity, so they
+  would agree, drift would stop being detected, and `vins.owner` would rot
+  silently behind a UI showing a value nothing writes.
+- **`vin` and `license_plate`.** **The roster's columns have no writer.** The
+  migration reserves them for kaufmann to fill and the read path serves them,
+  but nothing writes them and there is no backfill, so they are NULL on all 619
+  rows and arrive empty. This is step 3's missing-device-ids gap a second time,
+  in different columns — found the same way, by building the consumer.
+- **device token ids.** The fleet routes do not render them today. Widening a
+  response is a different change from swapping a source.
+
+The merge is per FIELD, not per row: a partial roster row cannot blank a make
+the console can already see, and a vehicle the roster has never seen renders
+exactly as it does now rather than disappearing.
+
+**Expect a visible casing change when the flag goes on.** The local path parses
+`device_definition_id` with `strings.ToTitle`, which upper-cases every rune
+rather than the first, so makes render as `"FORD"` and models as
+`"RANGER XLT"`. The roster serves identity-api's real `make`. The parse — which
+was copy-pasted into four controllers — is now one exported function with its
+existing behaviour pinned by a test, so the casing fix can be its own change
+rather than riding along inside a source swap.
+
+**The p99 gate is still open.** Plan asks for `/v1/authz` p99 either side of
+each reader. The instrumentation now exists (tenancy `v0.19.0`, fleet-lite
+`v0.20.0`) so the blocker recorded above is resolved, but the measurement has
+not been taken: as of 2026-08-20 15:58 UTC there is no `/v1/authz` series at
+all, so there is no traffic to measure. This reader shipped with the flag off,
+which is why that is a deferral rather than a skip.
+
+**Not done:** flipping kaufmann's flag on, and narrowing
 `fleets_lite.vehicles` to app-local columns. fleet-lite behind
 its flag, then kaufmann's b2b-facing reads, then `fleets_lite.vehicles` narrowed
 to app-local columns. Nothing calls this endpoint yet, so releasing it changes
