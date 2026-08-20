@@ -30,7 +30,8 @@ func (s *RosterService) Metadata(ctx context.Context, tokenIDs []int64) ([]model
 	rows, err := s.pdb.DBS().Reader.QueryContext(ctx,
 		`SELECT vehicle_token_id, COALESCE(owner, ''), COALESCE(definition_id, ''),
 		        COALESCE(make, ''), COALESCE(model, ''), year, minted_at,
-		        COALESCE(vin, ''), COALESCE(license_plate, ''), reconciled_at, unseen_since
+		        COALESCE(vin, ''), COALESCE(license_plate, ''), reconciled_at, unseen_since,
+		        synthetic_device_token_id, aftermarket_device_token_id
 		   FROM vehicles
 		  WHERE vehicle_token_id = ANY($1)
 		  ORDER BY vehicle_token_id`,
@@ -49,10 +50,21 @@ func (s *RosterService) Metadata(ctx context.Context, tokenIDs []int64) ([]model
 			reconciledAt time.Time
 			unseenSince  sql.NullTime
 			owner        string
+			synthetic    sql.NullInt64
+			aftermarket  sql.NullInt64
 		)
 		if err := rows.Scan(&v.VehicleTokenID, &owner, &v.DefinitionID, &v.Make, &v.Model,
-			&year, &mintedAt, &v.VIN, &v.LicensePlate, &reconciledAt, &unseenSince); err != nil {
+			&year, &mintedAt, &v.VIN, &v.LicensePlate, &reconciledAt, &unseenSince,
+			&synthetic, &aftermarket); err != nil {
 			return nil, fmt.Errorf("scan roster metadata: %w", err)
+		}
+		if synthetic.Valid {
+			id := synthetic.Int64
+			v.SyntheticDeviceTokenID = &id
+		}
+		if aftermarket.Valid {
+			id := aftermarket.Int64
+			v.AftermarketDeviceTokenID = &id
 		}
 		v.Owner = checksumOwner(owner)
 		if year.Valid {

@@ -3,8 +3,8 @@
 Status: **steps 1–3 done and live; step 4 half done; step 5 not started.**
 Rewritten 2026-08-19. Step 1 shipped as fleet-lite `v0.16.0`, step 2 as
 `v0.17.0`, step 3 as fleet-tenancy-api `v0.15.0` — the roster holds 619 rows and
-reconciles nightly at 04:00. Step 4's endpoint is released here (`v0.16.0`) and
-**no reader is cut over yet**; that is the next action. The paragraphs below
+reconciles nightly at 04:00. Step 4's endpoint is released here (`v0.16.0`, device ids
+added in `v0.18.0`) and **no reader is cut over yet**; that is the next action. The paragraphs below
 record why the first draft deferred this work and why that deferral was
 withdrawn — kept because the reasoning still governs steps 4 and 5.
 
@@ -440,6 +440,39 @@ Shape, and the reasoning that is not obvious from it:
   timestamp the caller can show, not something inferred from absence.
 - 5000 token ids per request, far above the whole 619-row roster — a bound on
   one request becoming an unbounded query, not a constraint on real use.
+
+#### The roster needed device ids before any reader could move
+
+Found while writing the fleet-lite cutover, and worth recording because it is
+the kind of gap that only shows up when you try to use the thing.
+
+Step 3 gave the roster owner, definition and mint time and argued the device
+nodes out of scope — *"the roster records what a vehicle is and who owns it, and
+a paired device is neither."* That is a defensible sentence and it is wrong for
+this purpose: fleet-lite's fleet list renders a connection indicator straight
+from `syntheticDevice.tokenId > 0` / `aftermarketDevice.tokenId > 0`
+(`web/src/views/fleet-list-view.ts`), and its detail view names the device by
+token id. A cutover to a roster without them would have blanked that indicator
+for every vehicle — a silent visual regression on precisely the page being cut
+over, and one no test of the set would catch.
+
+So `vehicles` gained `synthetic_device_token_id` and
+`aftermarket_device_token_id`, both nullable, both served by the endpoint.
+
+**They are overwritten on every reconcile, including to NULL — unlike VIN and
+plate, which are filled forward.** The rule is not "never clear a column", it is
+*who is the source*: identity-api serves device pairing and does not serve VIN
+or plate, so a null here is the chain saying "nothing is paired" where a null
+plate is only "we did not read it". Filling device ids forward would leave a
+vehicle reading as connected forever after its device was unpaired. There is a
+test for the unpairing case for exactly that reason.
+
+Still deliberately narrow: token ids only, no serial, no IMEI, no device mint
+time. Those are kaufmann's device table, which is the boundary this plan draws.
+
+The query was verified against prod identity-api before release — a real
+`syntheticDevice.tokenId` and a null `aftermarketDevice` on the same page, which
+is the case the parser has to get right.
 
 **Not done and deliberately not started here:** the readers. fleet-lite behind
 its flag, then kaufmann's b2b-facing reads, then `fleets_lite.vehicles` narrowed
