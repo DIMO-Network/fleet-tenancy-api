@@ -22,7 +22,7 @@ the row in the same PR that ships the step**, not later.
 | [03-fleet-lite-operator-tenants.md](03-fleet-lite-operator-tenants.md) | Planned 2026-08-15, nothing shipped |
 | [04-invitations-into-tenancy.md](04-invitations-into-tenancy.md) | P1 deployed, P2 backfilled 2026-08-16; **flag flip outstanding** (`INVITES_FROM_TENANCY` unset in prod) |
 | [06-signer-key-consolidation.md](06-signer-key-consolidation.md) | Written 2026-08-19, not started; step 1 is read-only and cheap |
-| [07-vehicle-roster.md](07-vehicle-roster.md) | Steps 1–3 done and live; **step 4** — fleet-lite's reader cut over and on in prod (one tenant); kaufmann's reader built behind the same flag, shipped `'false'`, **not flipped**; step 5 not started |
+| [07-vehicle-roster.md](07-vehicle-roster.md) | Steps 1–3 done and live; **step 4 done** — both readers cut over and ON in prod (fleet-lite 2026-08-20 14:17, kaufmann `v1.53.0` + flip 20:20 UTC); neither path exercised by real traffic yet; step 5 not started |
 
 ## Writing one
 

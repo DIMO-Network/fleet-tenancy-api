@@ -550,7 +550,15 @@ The p99 gate was consciously skipped rather than met, because it cannot be
 measured: neither service records request latency. That is now the named next
 task on this thread, before kaufmann's reads or any new managed tenant.
 
-#### Kaufmann's b2b reads — built, shipped off
+#### Kaufmann's b2b reads — built, released `v1.53.0`, FLIPPED ON 2026-08-20 20:20 UTC
+
+kaufmann-oracle#223, released as `v1.53.0` (which also shipped the
+`access_fleet_groups` drop that had sat unreleased on main — **plan 01 P5b is
+now unblocked**, the FK is gone from prod). The flip rolled the pods via the
+chart's config checksum; both logged the wiring line, no errors in either
+service since. Like fleet-lite's flip, the path is wired but unexercised until
+someone loads a b2b fleet page — unlike fleet-lite's, it reaches every tenant
+on those routes, not one.
 
 `VEHICLE_METADATA_FROM_TENANCY` in kaufmann-oracle, same name and same shape as
 fleet-lite's, defaulting `'false'` in both value files. It moves
@@ -598,8 +606,8 @@ not been taken: as of 2026-08-20 15:58 UTC there is no `/v1/authz` series at
 all, so there is no traffic to measure. This reader shipped with the flag off,
 which is why that is a deferral rather than a skip.
 
-**Not done:** flipping kaufmann's flag on, and narrowing
-`fleets_lite.vehicles` to app-local columns. fleet-lite behind
+**Not done:** narrowing `fleets_lite.vehicles` to app-local columns (step 5),
+and the first real-traffic verification of either reader. fleet-lite behind
 its flag, then kaufmann's b2b-facing reads, then `fleets_lite.vehicles` narrowed
 to app-local columns. Nothing calls this endpoint yet, so releasing it changes
 no behaviour anywhere — which is the point of shipping it separately from the
