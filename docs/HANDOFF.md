@@ -1,8 +1,8 @@
 # Handoff — operator-managed multi-tenancy
 
-Written 2026-08-06. Read this plus
-`fleet-lite-app/docs/operator-tenancy/` (the full design set — it is gitignored
-in this repo until the weaknesses it documents are fixed).
+Written 2026-08-06. Read this plus [`operator-tenancy/`](operator-tenancy/) —
+the full design set, published here 2026-08-12 once the two weaknesses it
+documents were fixed. An identical copy lives in `fleet-lite-app`.
 
 **Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 16:00 UTC*.
 Start there; this file is long and appends newest-last.
