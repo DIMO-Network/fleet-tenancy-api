@@ -1,0 +1,35 @@
+{{/*
+The service's own Grafana dashboard, shipped as a ConfigMap the Grafana sidecar
+picks up.
+
+WHY IT LIVES HERE rather than with the other twenty-three dashboards in
+cluster-helm-charts/charts/dimo-mon: that release is applied by a manual
+`helm upgrade mon` which re-renders the whole monitoring stack, kube-prometheus-
+stack subchart included. A dashboard is not worth that operation, and a
+dashboard waiting on it is a dashboard nobody has.
+
+cluster-helm-charts#122 made the sidecar scan mon, dev AND prod for ConfigMaps
+labelled grafana_dashboard=1 — verified on the live deployment,
+NAMESPACE=mon,dev,prod — so this reaches Grafana through the same ArgoCD sync as
+everything else this service owns.
+
+The label is what the sidecar selects on. Without `grafana_dashboard: "1"` this
+is an inert ConfigMap and the dashboard simply never appears, with nothing
+logged anywhere to say why.
+
+It charts BOTH fleet services, not just this one: the `service` variable selects
+between them, and the two emit identical metric names on purpose. Whoever adds a
+third should extend this rather than write a fourth dashboard.
+*/}}
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fleet-tenancy-api.fullname" . }}-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fleet-tenancy-api.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+{{ (.Files.Glob "dashboards/*.json").AsConfig | indent 2 }}
+{{- end }}
