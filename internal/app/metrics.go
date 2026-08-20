@@ -93,6 +93,20 @@ func NewMetricsMiddleware() fiber.Handler {
 }
 
 // routeLabel is the registered route pattern, or "unmatched".
+//
+// A REQUEST REFUSED AT THE /v1 GATE IS LABELLED "/v1", NOT ITS REAL ROUTE, and
+// that is worth knowing before it is filed as a bug. The trusted-caller guard
+// and the JWT middleware are mounted on the group, so when one of them aborts,
+// the last route fiber executed is the group's own mount path. Verified in
+// prod: six unauthenticated calls to /v1/authz and
+// /v1/tenants/{id}/vehicles all recorded as
+//
+//	http_requests_total{method="GET",path="/v1",status="401"} 6
+//
+// It reads oddly and it is the useful behaviour: everything turned away before
+// reaching a handler collapses into one series, so "requests refused at the
+// gate" is a single line on a chart rather than smeared across every route.
+// Requests that reach their handler carry their real pattern.
 func routeLabel(c *fiber.Ctx) string {
 	if r := c.Route(); r != nil && r.Path != "" {
 		// Fiber reports "/" for unmatched paths on some versions; treat a "/"
