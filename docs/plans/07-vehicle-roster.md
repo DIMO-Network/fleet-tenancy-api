@@ -538,7 +538,18 @@ metadata cache is filled by misses. So the choice is a real one rather than a
 formality: instrument first and meet the gate, or flip for one tenant now and
 instrument before the population grows.
 
-**Not done:** the flip itself, and the readers after it. fleet-lite behind
+#### The flip happened — 2026-08-20 14:17 UTC
+
+`VEHICLE_METADATA_FROM_TENANCY: 'true'` in prod (fleet-lite-app#139). Configmap
+carries it, both pods logged the wiring, no errors in either service. TRAST — the
+one tenant the flag reaches — renders its metadata from the roster.
+
+The p99 gate was consciously skipped rather than met, because it cannot be
+measured: neither service records request latency. That is now the named next
+task on this thread, before kaufmann's reads or any new managed tenant.
+
+**Not done:** kaufmann's b2b-facing vehicle reads, and narrowing
+`fleets_lite.vehicles` to app-local columns. fleet-lite behind
 its flag, then kaufmann's b2b-facing reads, then `fleets_lite.vehicles` narrowed
 to app-local columns. Nothing calls this endpoint yet, so releasing it changes
 no behaviour anywhere — which is the point of shipping it separately from the
