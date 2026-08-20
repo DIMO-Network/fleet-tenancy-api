@@ -10,14 +10,19 @@ the *design*: locked decisions and the reasoning behind them, kept indefinitely.
 A plan is the execution path to a design, and it goes stale the moment it is
 finished.
 
+Statuses are only true if they are maintained. This table was stale for a week
+— it called the groups move unstarted while it ran in production, and called
+plan 07 step 1 an open prod bug after it had been fixed and released. **Update
+the row in the same PR that ships the step**, not later.
+
 | Plan | Status |
 |---|---|
-| [01-groups-into-tenancy.md](01-groups-into-tenancy.md) | Agreed, not started |
-| [02-vehicle-memberships.md](02-vehicle-memberships.md) | Steps 1–5 shipped 2026-08-14; step 6 next |
+| [01-groups-into-tenancy.md](01-groups-into-tenancy.md) | P1–P4 live, P5a landed; **P5b (drop the local tables) outstanding**, blocked on kaufmann's `access_fleet_groups` FK |
+| [02-vehicle-memberships.md](02-vehicle-memberships.md) | **Done** — steps 1–6 shipped; enforced in prod |
 | [03-fleet-lite-operator-tenants.md](03-fleet-lite-operator-tenants.md) | Planned 2026-08-15, nothing shipped |
-| [04-invitations-into-tenancy.md](04-invitations-into-tenancy.md) | P1 deployed, P2 backfilled 2026-08-16; flag flip outstanding |
-| [06-signer-key-consolidation.md](06-signer-key-consolidation.md) | Written 2026-08-19, not started |
-| [07-vehicle-roster.md](07-vehicle-roster.md) | Rewritten 2026-08-19 around centralising the roster; not started, step 1 is an open prod bug |
+| [04-invitations-into-tenancy.md](04-invitations-into-tenancy.md) | P1 deployed, P2 backfilled 2026-08-16; **flag flip outstanding** (`INVITES_FROM_TENANCY` unset in prod) |
+| [06-signer-key-consolidation.md](06-signer-key-consolidation.md) | Written 2026-08-19, not started; step 1 is read-only and cheap |
+| [07-vehicle-roster.md](07-vehicle-roster.md) | Steps 1–3 done and live; **step 4 half done** — endpoint released `v0.16.0`, no reader cut over; step 5 not started |
 
 ## Writing one
 

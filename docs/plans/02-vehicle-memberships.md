@@ -1,7 +1,12 @@
 # Vehicle memberships — a per-vehicle, term-based product
 
-Status: **steps 1–5 shipped and deployed 2026-08-14. Step 6 (fleet-lite's read
-filter) and step 7 (turning enforcement on) remain.** Written 2026-08-13.
+Status: **DONE — steps 1–6 shipped.** Steps 1–5 deployed 2026-08-14; step 6
+(fleet-lite's read) is live — `GET /v1/tenants/{id}/active-vehicle-memberships`
+is served here and fleet-lite intersects its vehicle set with it on every
+request (`intersectActiveMemberships`, cached at `membershipTTL`). Verified in
+prod 2026-08-20 for tenant TRAST: `MEMBERSHIP_ENFORCED=true ACTIVE_COUNT=9`, so
+the intersection genuinely runs rather than passing through. The PICK-UP
+section below is kept for its reasoning and is no longer a to-do.
 
 **Everything deployed so far is inert.** `memberships_enforced` is `false` for
 every tenant in production, so no customer's fleet has changed. An operator can

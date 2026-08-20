@@ -1,6 +1,12 @@
 # Fleet groups move into fleet-tenancy-api
 
-Status: **agreed, not started**. Written 2026-08-12.
+Status: **P1–P4 shipped and live; P5a landed; P5b outstanding.** Written
+2026-08-12. Both apps read groups from this service behind `GROUPS_FROM_TENANCY`
+(`true` in prod since 2026-08-13), both write here, and their import/reconcile
+machinery is deleted — this service is the single publisher of
+`dimo.document.vehicle.groups`. P5a moved the last scope readers off the local
+tables. **What remains is P5b: dropping them**, still blocked on kaufmann's
+`access_fleet_groups` FK, and gated on a soak with `groups-diff` clean.
 
 ## The problem
 

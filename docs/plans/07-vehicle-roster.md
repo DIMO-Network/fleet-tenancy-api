@@ -1,12 +1,12 @@
 # The minted-vehicle roster moves here
 
-Status: **rewritten 2026-08-19, nothing started.** The first draft of this plan
-(`07-vehicle-set-coherence.md`, same file, previous commit) recorded the roster
-move as *"direction of travel, not a step"* and deferred it on load grounds.
-**That deferral is withdrawn.** It was a judgement call about sequencing, and
-the evidence gathered since is a stronger argument than the risk it was
-weighing: three production vehicles where kaufmann-oracle's stored owner
-contradicts the chain, with no mechanism that would ever notice.
+Status: **steps 1–3 done and live; step 4 half done; step 5 not started.**
+Rewritten 2026-08-19. Step 1 shipped as fleet-lite `v0.16.0`, step 2 as
+`v0.17.0`, step 3 as fleet-tenancy-api `v0.15.0` — the roster holds 619 rows and
+reconciles nightly at 04:00. Step 4's endpoint is released here (`v0.16.0`) and
+**no reader is cut over yet**; that is the next action. The paragraphs below
+record why the first draft deferred this work and why that deferral was
+withdrawn — kept because the reasoning still governs steps 4 and 5.
 
 The coherence work the first draft described is not discarded — it is steps 1
 and 2 here, because it is the prerequisite for the move rather than an
