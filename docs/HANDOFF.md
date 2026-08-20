@@ -2655,6 +2655,9 @@ and cheap.
 calls it.** Next action is fleet-lite's cutover behind a flag — the endpoint it
 needs now exists.
 
+*(This service is now on `v0.17.0` — same endpoint, plus the mint retry below.
+fleet-lite is on `v0.18.0`.)*
+
 Deployed and checked: prod `/version` reports `fd2a692`, the merge commit, on
 two fresh pods, and `values.yaml` and `values-prod.yaml` both carry that tag —
 the merge-does-not-deploy trap does not apply here, because this change has no
@@ -2755,6 +2758,10 @@ like from outside. Only a fresh challenge can succeed, and `GetToken` starts one
 on every call. Both repos now retry three times, 250ms apart, and still return
 nil after the last, so a genuinely wrong credential fails in about half a second
 instead of hanging.
+
+Released as `v0.17.0` here and `v0.18.0` in fleet-lite-app, both deployed and
+verified: a groups-diff run against prod on the fixed image returned
+`tenants=6 groups=88 agree=83 differ=0 missing_remote=0 unreachable=0`, exit 0.
 
 Here that is `mintWithRetry` in `internal/service/mint_retry.go`, wired into
 `DeveloperJWT` (the `/v1/tenants/{id}/dimo-token` minter fleet-lite calls for
