@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus
 `fleet-lite-app/docs/operator-tenancy/` (the full design set — it is gitignored
 in this repo until the weaknesses it documents are fixed).
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 04:30 UTC*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 14:00 UTC*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -2649,7 +2649,7 @@ sent. Plan 06 (signer-key consolidation) is unstarted; its step 1 is read-only
 and cheap.
 
 
-## PICK UP HERE — session handoff, 2026-08-20 ~04:30 UTC
+## Session handoff, 2026-08-20 ~04:30 UTC (superseded — see below)
 
 **The step 4 endpoint is released and running in prod as `v0.16.0`. Nothing
 calls it.** Next action is fleet-lite's cutover behind a flag — the endpoint it
@@ -2792,3 +2792,79 @@ The traps list above is unchanged and still the thing to read before deploying:
 merging does not deploy, `Synced/Healthy` is not evidence, the version-bump
 workflow eats comments in `values.yaml`, Helm's `default` eats `0`, and the prod
 DB tunnel's cert lasts four minutes.
+
+
+## PICK UP HERE — session handoff, 2026-08-20 ~14:00 UTC
+
+**Step 4 is built end to end and released on both sides, with the flag off. The
+next action is one decision, not one commit** — see "the flip" below.
+
+### Released this session
+
+| | |
+|---|---|
+| fleet-tenancy-api `v0.16.0` | `POST /v1/tenants/{id}/vehicle-metadata` — the roster read |
+| fleet-tenancy-api `v0.17.0` | developer-JWT mint retry (the flaky login challenge) |
+| fleet-tenancy-api `v0.18.0` | roster gains synthetic/aftermarket device token ids |
+| fleet-lite-app `v0.18.0` | mint retry + groups-diff no longer aborts on one tenant |
+| fleet-lite-app `v0.19.0` | `VEHICLE_METADATA_FROM_TENANCY`, shipped **false** |
+
+All deployed and verified on the workload, not just Synced.
+
+### The gap that only showed up when the reader was written
+
+Step 3's roster had no device ids — it argued a paired device is not what a
+vehicle is. True in the abstract, wrong here: fleet-lite's list draws its
+connection indicator from `syntheticDevice.tokenId > 0` /
+`aftermarketDevice.tokenId > 0`, so cutting over to a roster without them would
+have blanked it for every vehicle. Silent, and invisible to any test of the set.
+`v0.18.0` added the columns. **Write the reader before believing the endpoint is
+done** — that is the transferable lesson.
+
+Device ids are overwritten each reconcile, including to NULL, where VIN and
+plate are filled forward. The rule is not "never clear a column", it is who the
+source is: identity-api serves device pairing and does not serve VIN or plate.
+
+### The pre-flight is done and the answer is good
+
+A reconcile was run manually so the columns were not empty until 04:00:
+`vehicles_seen=619 updated=619`, giving 458 synthetic, 99 aftermarket, 62
+unpaired. Compared against what fleet-lite renders today, over the 609 vehicles
+both hold: **connection indicator differs 0, make/model differs 0.**
+
+**The flag reaches exactly one tenant.** `resolvesFromTenancy` is true only for
+tenants with no client id of their own — TRAST, nine vehicles. All nine are in
+the roster with make, model and a synthetic device id. The 19 tokens fleet-lite
+holds that the roster does not belong to self-serve tenants, which take the
+local path and the flag never touches.
+
+### The flip — one decision, and it is yours
+
+The plan says to measure p99 on `/v1/authz` before and after. **That cannot be
+measured today.** `MONITORING_PORT` is set in both charts and nothing serves
+`/metrics` in fleet-tenancy-api; neither service records request latency. The
+gate as written is unmeetable, and quietly skipping it is how a gate becomes
+decoration.
+
+In proportion: the concern is this service becoming load-bearing for *every*
+fleet render, and today the flag reaches one tenant and nine vehicles, with a
+steady-state render adding zero calls because the metadata cache fills by
+misses. So either:
+
+1. **Flip now for TRAST** — `VEHICLE_METADATA_FROM_TENANCY: 'true'` in
+   `charts/fleet-lite-app/values-prod.yaml`, watch that tenant, and instrument
+   before the population grows. Revert is a config flip.
+2. **Instrument first** — a metrics endpoint and a latency histogram in
+   fleet-tenancy-api, then meet the gate as written. Larger, and it is work the
+   service needs eventually regardless: it has been load-bearing for `/v1/authz`
+   since 2026-08-11 with no latency signal at all.
+
+Everything else for step 4 is finished either way.
+
+### Still true
+
+**No vehicle share has ever been sent.** Plan 06 is unstarted and its step 1 is
+read-only and cheap. The traps list earlier in this file is unchanged — merging
+does not deploy, `Synced/Healthy` is not evidence, the version-bump workflow
+eats comments in `values.yaml`, Helm's `default` eats `0`, and the prod DB
+tunnel's cert lasts four minutes.
