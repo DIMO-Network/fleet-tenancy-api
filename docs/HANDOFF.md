@@ -2651,10 +2651,17 @@ and cheap.
 
 ## PICK UP HERE — session handoff, 2026-08-20 ~04:30 UTC
 
-**The step 4 endpoint is written, tested and unreleased. Nothing calls it.**
-Next action is either to release it (a `v*` tag — it changes no behaviour, since
-it has no caller) or to go straight to fleet-lite's cutover behind a flag, which
-needs it released first.
+**The step 4 endpoint is released and running in prod as `v0.16.0`. Nothing
+calls it.** Next action is fleet-lite's cutover behind a flag — the endpoint it
+needs now exists.
+
+Deployed and checked: prod `/version` reports `fd2a692`, the merge commit, on
+two fresh pods, and `values.yaml` and `values-prod.yaml` both carry that tag —
+the merge-does-not-deploy trap does not apply here, because this change has no
+chart half. Note that probing the route over HTTP proves nothing either way: the
+`/v1` trusted-caller guard answers 401 before routing, so an unknown path and a
+real one are indistinguishable from outside. The evidence that the endpoint is
+there is the commit `/version` names, plus its route test in that commit.
 
 ### What this session did
 
@@ -2707,7 +2714,8 @@ Three properties that are tests rather than intentions:
 
 ### Step 4, what remains
 
-1. Release this (`v*` tag). Zero behaviour change — no caller.
+1. ~~Release this (`v*` tag).~~ Done — `v0.16.0`, 2026-08-20, zero behaviour
+   change because nothing calls it.
 2. **fleet-lite behind a flag** (`VEHICLE_METADATA_FROM_TENANCY`, or whatever
    name — the point is the flag). Its `listResolvedVehicles` keeps
    `resolveTokenSet` exactly as is and swaps the `dbmodels.Vehicles` query for

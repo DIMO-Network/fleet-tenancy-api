@@ -390,7 +390,7 @@ keep the flag until a full release has run clean.
 
 #### The endpoint exists — `POST /v1/tenants/{tenantId}/vehicle-metadata`
 
-**Served here, not yet released, no caller.** Step 3 stood the table up and the
+**Released as `v0.16.0`, 2026-08-20, and running in prod. No caller yet.** Step 3 stood the table up and the
 plan then said "step 3's endpoint" as though there were one; there was not.
 This is it, and it is the whole of this repo's share of step 4 — the cutover
 itself is a flag and a code path in each reader.
