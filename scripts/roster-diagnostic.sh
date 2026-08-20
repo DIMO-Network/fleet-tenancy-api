@@ -24,6 +24,12 @@
 #   fleet-lite-only       178    never came through kaufmann — self-serve
 #                                tenants' own licences
 #
+# The first two are stable; the third is not. Re-run 2026-08-19 22:0x UTC gave
+# 3 / 27 / 179 — one more self-serve vehicle than the morning's count, which is
+# what a live platform does between two measurements. Treat the contradiction
+# count as the assertion and the population counts as context: 3 becoming 4 is
+# a finding, 179 becoming 180 is a Tuesday.
+#
 # READ IT, DO NOT ACT ON IT. The reconcile job already corrects owner from the
 # chain; this exists so a human sees the divergence once, with its shape, rather
 # than only ever seeing the corrected state. Nothing here writes.
@@ -99,9 +105,17 @@ printf 'fleet-lite-only: %s\n' "$(wc -l < "$work/fl_only.txt" | tr -d ' ')"
 echo "   (not listed; it is the self-serve population and the reason the roster"
 echo "    cannot live in kaufmann — it would have a permanent hole this size)"
 
-if [ -n "${FTA_USER:-}" ] && [ -n "${FTA_PASS:-}" ]; then
+roster_exists() {
+  local n
+  n=$(PGPASSWORD="$FTA_PASS" psql -U "$FTA_USER" -d fleet_tenancy_api -tAc \
+    "SELECT COUNT(*) FROM information_schema.tables
+      WHERE table_schema='fleet_tenancy_api' AND table_name='vehicles';" 2>/dev/null || echo 0)
+  [ "${n:-0}" = "1" ]
+}
+
+if [ -n "${FTA_USER:-}" ] && [ -n "${FTA_PASS:-}" ] && roster_exists; then
   echo
-  echo "== roster coverage, if reconcile-vehicles has run =="
+  echo "== roster coverage =="
   PGPASSWORD="$FTA_PASS" psql -U "$FTA_USER" -d fleet_tenancy_api -tAF'|' -c \
     "SELECT vehicle_token_id, lower(owner)
        FROM fleet_tenancy_api.vehicles
@@ -130,8 +144,9 @@ if [ -n "${FTA_USER:-}" ] && [ -n "${FTA_PASS:-}" ]; then
     | awk -F'|' '$2 != $3 { printf "token %-10s roster/chain=%s  kaufmann=%s\n", $1, $2, $3 }'
 else
   echo
-  echo "(FTA_USER/FTA_PASS not set — skipping roster coverage. Set them once"
-  echo " reconcile-vehicles has run in the environment you are pointed at.)"
+  echo "(skipping roster coverage: either FTA_USER/FTA_PASS are unset, or the"
+  echo " vehicles table does not exist yet in the environment you are pointed"
+  echo " at — which is the expected state before plan 07 step 3 is deployed.)"
 fi
 
 echo

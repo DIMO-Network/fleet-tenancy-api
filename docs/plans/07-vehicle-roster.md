@@ -296,12 +296,55 @@ for numeric overrides, so `backoffLimit: 0` would have been silently replaced by
 1 — the same trap fleet-lite's chart documents. Ported the `hasKey` form and the
 reasoning with it.
 
-Verified before deploying: the migration applies and reverses cleanly; nine
+**Coverage, measured rather than assumed.** The sweep was run at full prod scale
+— prod's ten real licences against prod identity-api, writing to a local
+database — and the result compared against both source tables:
+
+| | |
+|---|---|
+| roster | **619** |
+| union of `vins` + `fleets_lite.vehicles` | 655 |
+| in the union, not the roster | **45** (26 kaufmann-only, 16 fleet-lite-only, 3 in both) |
+| in the roster, not the union | 9 |
+
+The 45 are vehicles **no licence we hold is privileged on** — the plan's own
+description of the kaufmann-only 27 is "onboarded, not (or no longer) in any
+synced fleet", and that is what this measures. It is a different thing from
+kaufmann's hole: kaufmann structurally could not see 178 vehicles that a
+customer was actively using, whereas these are vehicles nobody's credential can
+currently read. **None of them is entitled to anybody** — all nine active
+entitlements are covered — so no customer is affected today.
+
+It is bounded rather than closed, and deliberately: identity-api answers
+`vehicle(tokenId:)` for any token without privilege, so any of the 45 is
+*reachable*; what is missing is a way to *learn* their token ids, since only
+kaufmann's table names them and this service cannot read it. If that matters
+later, the honest fix is kaufmann publishing its onboarded token ids, not this
+service reaching into another schema.
+
+**What is guaranteed:** an active entitlement's vehicle is always in the roster.
+The reconcile fills any entitled token the sweep could not enumerate via a
+single lookup, because once readers cut over in step 4, an entitled vehicle
+missing from the roster IS the empty-fleet incident again, one layer down.
+
+Verified before deploying: the migration applies and reverses cleanly; twelve
 service tests run against a real database; and the identity-api query was run
 against prod through the gateway, returning **553 vehicles over six pages** with
 owner, `mintedAt` and definition parsed for every one, no repeated token ids,
 and an empty client id refused. 553 is the same count fleet-lite's sync reports
 for that licence, so the pagination is complete rather than truncated.
+
+**The diagnostic was run, 2026-08-19 ~22:00 UTC, and the plan's numbers hold:**
+3 owner contradictions (192379, 192400, 192401 — kaufmann `0xda13fe28…`, chain
+`0x97b8ba44…`), 27 kaufmann-only, and 179 fleet-lite-only against a documented
+178 — one vehicle more than the morning's count, which is what a live platform
+does between two measurements. Treat the contradiction count as the assertion
+and the population counts as context.
+
+**And the roster corrects them.** After a full prod-scale reconcile, all three
+T60s read `0x97B8bA44C66d2C893925dE41BbDF0eE9b9640E7a` — the chain's answer, not
+kaufmann's. A second run reported `inserted=0 updated=619 owner_changes=0`, so
+the steady state is quiet and a real transfer will not hide in noise.
 
 ### 4. Cut the readers over
 

@@ -93,6 +93,7 @@ func (p *reconcileVehiclesCmd) Execute(ctx context.Context, _ *flag.FlagSet, _ .
 		Int("inserted", report.Inserted).
 		Int("updated", report.Updated).
 		Int("owner_changes", len(report.OwnerChanges)).
+		Int("entitled_filled", report.EntitledFilled).
 		Int("marked_unseen", report.MarkedUnseen).
 		Msg("reconcile-vehicles complete")
 

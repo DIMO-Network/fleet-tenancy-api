@@ -294,3 +294,85 @@ func TestReconcileEmptyOwnerDoesNotBlank(t *testing.T) {
 	assert.Empty(t, rep.OwnerChanges, "a missing read is not a transfer")
 	assert.Equal(t, ownerNew, rosterOwner(t, store, 51))
 }
+
+// An entitled vehicle whose SACD is shared with no licence we hold is invisible
+// to the sweep — but the entitlement is OUR record, so the token id is known
+// and the roster must hold it anyway. Once readers cut over in step 4, an
+// entitled vehicle missing from the roster is the empty-fleet incident again,
+// one layer down.
+func TestReconcileFillsEntitledVehicleTheSweepCannotSee(t *testing.T) {
+	id := &fakeIdentity{
+		privileged: map[string][]gateway.RosterVehicle{
+			licA: {rv(61, ownerNew, "Ford", "Ranger")},
+		},
+		details: map[int64]gateway.RosterVehicle{
+			62: rv(62, ownerNew, "Maxus", "T60"),
+		},
+	}
+	svc, store, ctx := rosterSvc(t, id)
+
+	_, err := store.DBS().Writer.Exec(
+		`INSERT INTO vehicle_entitlements (tenant_id, vehicle_token_id, source)
+		 VALUES ($1, 62, 'direct') ON CONFLICT DO NOTHING`, custTenant)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = store.DBS().Writer.Exec(
+			`DELETE FROM vehicle_entitlements WHERE tenant_id=$1 AND vehicle_token_id=62`, custTenant)
+	})
+
+	rep, err := svc.Reconcile(ctx, false)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, rep.EntitledFilled)
+	assert.Equal(t, 2, rep.VehiclesSeen, "the swept one plus the entitled one")
+	assert.Equal(t, ownerNew, rosterOwner(t, store, 62))
+}
+
+// An entitlement pointing at a token identity-api does not know is a data
+// problem to report, not a reason to abandon the whole reconcile.
+func TestReconcileUnresolvableEntitledVehicleIsNotFatal(t *testing.T) {
+	id := &fakeIdentity{
+		privileged: map[string][]gateway.RosterVehicle{
+			licA: {rv(71, ownerNew, "Ford", "Ranger")},
+		},
+		details: map[int64]gateway.RosterVehicle{}, // 72 is unknown to identity-api
+	}
+	svc, store, ctx := rosterSvc(t, id)
+
+	_, err := store.DBS().Writer.Exec(
+		`INSERT INTO vehicle_entitlements (tenant_id, vehicle_token_id, source)
+		 VALUES ($1, 72, 'direct') ON CONFLICT DO NOTHING`, custTenant)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = store.DBS().Writer.Exec(
+			`DELETE FROM vehicle_entitlements WHERE tenant_id=$1 AND vehicle_token_id=72`, custTenant)
+	})
+
+	rep, err := svc.Reconcile(ctx, false)
+	require.NoError(t, err, "one unresolvable entitlement must not fail the run")
+	assert.Zero(t, rep.EntitledFilled)
+	assert.Equal(t, 1, rep.VehiclesSeen)
+}
+
+// A revoked entitlement is not a gap to fill. Filling it would put a vehicle
+// the operator took away back into the roster every night.
+func TestReconcileIgnoresRevokedEntitlements(t *testing.T) {
+	id := &fakeIdentity{
+		privileged: map[string][]gateway.RosterVehicle{licA: {rv(81, ownerNew, "Ford", "Ranger")}},
+		details:    map[int64]gateway.RosterVehicle{82: rv(82, ownerNew, "Maxus", "T60")},
+	}
+	svc, store, ctx := rosterSvc(t, id)
+
+	_, err := store.DBS().Writer.Exec(
+		`INSERT INTO vehicle_entitlements (tenant_id, vehicle_token_id, source, revoked_at)
+		 VALUES ($1, 82, 'direct', NOW()) ON CONFLICT DO NOTHING`, custTenant)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = store.DBS().Writer.Exec(
+			`DELETE FROM vehicle_entitlements WHERE tenant_id=$1 AND vehicle_token_id=82`, custTenant)
+	})
+
+	rep, err := svc.Reconcile(ctx, false)
+	require.NoError(t, err)
+	assert.Zero(t, rep.EntitledFilled)
+}

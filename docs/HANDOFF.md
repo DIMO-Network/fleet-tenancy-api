@@ -2447,23 +2447,59 @@ Read `roster.go`'s comments before changing any of it; the three rules that are
 easy to "simplify" and must not be are owner-is-re-read-and-logged,
 VIN/plate-fill-forward-never-clear, and a-partial-sweep-marks-nothing-unseen.
 
-### Before the first production run
+### The diagnostic has been run — 2026-08-19 ~22:00 UTC
 
-```sh
-# 1. the diagnostic, once, read by a human
-export PGHOST=localhost PGPORT=5430 PGSSLMODE=require   # after: ssh dimo-database-prod
-export KAUF_USER=… KAUF_PASS=… FL_USER=… FL_PASS=…      # from each service's k8s secret
-./scripts/roster-diagnostic.sh
+You do not need to run it again unless you want the numbers refreshed. It
+confirmed the plan on live data:
 
-# 2. then, once deployed, a dry run before the cron ever writes
-kubectl -n prod create job --from=cronjob/fleet-tenancy-api-reconcile-vehicles \
-  reconcile-dryrun-$(date +%s)      # edit the job to add -dry-run, or run it by hand
+```
+contradictions: 3     192379, 192400, 192401
+                      kaufmann=0xda13fe28…  fleet-lite/chain=0x97b8ba44…
+kaufmann-only : 27    exactly as documented
+fleet-lite-only: 179  documented as 178 — one new self-serve vehicle since
 ```
 
-Expected from the diagnostic: **3** owner contradictions (192379, 192400,
-192401 — Maxus T60s, kaufmann says `0xDA13fE28…`, the chain says `0x97B8bA44…`),
-**27** kaufmann-only tokens, **178** fleet-lite-only. The script prints those
-expectations inline so a mismatch is obvious.
+Treat the contradiction count as the assertion and the population counts as
+context: 3 becoming 4 is a finding, 179 becoming 180 is a Tuesday.
+
+**And the roster corrects them.** A full prod-scale reconcile — prod's ten real
+licences against prod identity-api, writing to a LOCAL database, nothing written
+to prod — produced all three T60s reading `0x97B8bA44…`, the chain's answer. A
+second run reported `inserted=0 updated=619 owner_changes=0`, so the steady
+state is quiet and a real transfer will not hide in noise.
+
+### Coverage, measured — and the one honest gap
+
+| | |
+|---|---|
+| roster | **619** |
+| union of `vins` + `fleets_lite.vehicles` | 655 |
+| in the union, not the roster | **45** (26 kaufmann-only, 16 fleet-lite-only, 3 in both) |
+
+The 45 are vehicles **no licence we hold is privileged on** — the plan's own
+words for the kaufmann-only 27 are "onboarded, not (or no longer) in any synced
+fleet". Different in kind from kaufmann's hole, which was 178 vehicles a
+customer was actively using. **None of the 45 is entitled to anybody**, so no
+customer is affected.
+
+Bounded, not closed, and deliberately: identity-api answers `vehicle(tokenId:)`
+without privilege, so each of the 45 is *reachable* — what is missing is a way
+to *learn* their ids, since only kaufmann's table names them and this service
+cannot read that schema. If it matters later, the fix is kaufmann publishing its
+onboarded token ids, not this service reaching across a schema boundary.
+
+**What is guaranteed:** an active entitlement's vehicle is always in the roster.
+The reconcile fills any entitled token the sweep cannot enumerate via a single
+lookup — because once readers cut over in step 4, an entitled vehicle missing
+from the roster IS the empty-fleet incident again, one layer down.
+
+### Still to do before the cron writes in prod
+
+```sh
+# once step 3 is deployed, a dry run first — it computes everything, writes nothing
+kubectl -n prod create job --from=cronjob/fleet-tenancy-api-reconcile-vehicles \
+  reconcile-dryrun-$(date +%s)      # then edit the job to add -dry-run, or run by hand
+```
 
 ### What was verified, and what was not
 
@@ -2474,10 +2510,10 @@ the gateway and returned **553 vehicles over six pages**, every one with owner,
 refused. 553 matches what fleet-lite's sync reports for that licence, so the
 pagination is complete rather than truncated.
 
-Not verified: `reconcile-vehicles` has never run against the prod database. The
-SSH tunnel's cloudflared cert expires after four minutes and re-authenticating
-is interactive, so the prod DB was unreachable for the second half of this
-session. That is why the dry run above is a step and not a formality.
+Not verified: `reconcile-vehicles` has never WRITTEN to the prod database. It
+has been run at full prod scale against prod's real licences and prod
+identity-api, but writing to a local postgres — which exercises everything
+except the prod write itself. That is why the dry run above is still a step.
 
 ### A trap that bit twice today
 

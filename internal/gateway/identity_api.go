@@ -41,6 +41,7 @@ type IdentityAPI interface {
 	RedirectURIForClientID(clientID string) (string, error)
 	VehicleOwner(tokenID int64) (string, error)
 	PrivilegedVehicles(clientID string) ([]RosterVehicle, error)
+	VehicleDetail(tokenID int64) (*RosterVehicle, error)
 }
 
 // RosterVehicle is one identity-api vehicle node, reduced to the fields the
@@ -331,4 +332,97 @@ func (i *identityAPIService) PrivilegedVehicles(clientID string) ([]RosterVehicl
 		}
 		after = fmt.Sprintf("%q", pi.EndCursor)
 	}
+}
+
+// vehicleDetailQuery reads one vehicle's roster fields by token id.
+//
+// Deliberately NOT privilege-filtered: what a vehicle is and who owns it is
+// public chain data, and identity-api answers for a token no licence of ours is
+// privileged on. That is what lets the roster hold a vehicle the privileged
+// sweep cannot enumerate.
+const vehicleDetailQuery = `{
+	vehicle(tokenId: %d) {
+		tokenId
+		owner
+		mintedAt
+		definition { id make model year }
+	}
+}`
+
+// VehicleDetail returns one vehicle's roster fields, or ErrVehicleNotFound.
+//
+// The sweep enumerates; this fills. A vehicle can be entitled to a customer
+// while its SACD is not shared with any licence we hold — the entitlement is
+// this service's own record, so we know the token id without being able to list
+// it — and such a vehicle must still be in the roster. An entitled vehicle
+// missing from the roster would be the empty-fleet incident again, one layer
+// down, once readers cut over to it in step 4.
+func (i *identityAPIService) VehicleDetail(tokenID int64) (*RosterVehicle, error) {
+	if i.endpoint.String() == "" {
+		return nil, fmt.Errorf("IDENTITY_API_ENDPOINT is not configured")
+	}
+	payload, err := json.Marshal(map[string]string{
+		"query": fmt.Sprintf(vehicleDetailQuery, tokenID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	hcw, _ := shttp.NewClientWrapper(i.endpoint.String(), "", identityAPITimeout, nil, true, shttp.WithRetry(2))
+	resp, err := hcw.ExecuteRequest("", "POST", payload)
+	if err != nil {
+		return nil, fmt.Errorf("identity-api vehicle detail: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("identity-api response: %w", err)
+	}
+
+	var res struct {
+		Data struct {
+			Vehicle *struct {
+				TokenID    int64   `json:"tokenId"`
+				Owner      string  `json:"owner"`
+				MintedAt   *string `json:"mintedAt"`
+				Definition struct {
+					ID    string `json:"id"`
+					Make  string `json:"make"`
+					Model string `json:"model"`
+					Year  int    `json:"year"`
+				} `json:"definition"`
+			} `json:"vehicle"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("identity-api response: %w", err)
+	}
+	if len(res.Errors) > 0 {
+		return nil, fmt.Errorf("identity-api vehicle %d: %s", tokenID, res.Errors[0].Message)
+	}
+	if res.Data.Vehicle == nil {
+		return nil, ErrVehicleNotFound
+	}
+
+	n := res.Data.Vehicle
+	out := &RosterVehicle{
+		TokenID:      n.TokenID,
+		DefinitionID: n.Definition.ID,
+		Make:         n.Definition.Make,
+		Model:        n.Definition.Model,
+		Year:         n.Definition.Year,
+	}
+	if common.IsHexAddress(n.Owner) {
+		out.Owner = common.HexToAddress(n.Owner).Hex()
+	}
+	if n.MintedAt != nil && *n.MintedAt != "" {
+		if ts, terr := time.Parse(time.RFC3339, *n.MintedAt); terr == nil {
+			out.MintedAt = &ts
+		}
+	}
+	return out, nil
 }

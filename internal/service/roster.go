@@ -63,6 +63,13 @@ type ReconcileReport struct {
 	OwnerChanges []OwnerChange
 	MarkedUnseen int
 	FirstRun     bool
+
+	// EntitledFilled counts vehicles the licence sweep could not enumerate but
+	// that an active entitlement named, fetched individually. Normally zero: a
+	// customer's vehicles are usually shared with the licence serving them. A
+	// non-zero count is worth understanding rather than ignoring — it means
+	// somebody is entitled to a vehicle whose SACD we cannot read.
+	EntitledFilled int
 }
 
 // Reconcile sweeps every developer licence this service holds, reads each
@@ -106,6 +113,18 @@ func (s *RosterService) Reconcile(ctx context.Context, dryRun bool) (*ReconcileR
 			byToken[v.TokenID] = v
 		}
 	}
+	// An entitled vehicle whose SACD is not shared with any licence we hold is
+	// invisible to the sweep above, but its token id is this service's OWN
+	// record — so it is knowable, and it must be in the roster. Once readers
+	// cut over (step 4), an entitled vehicle missing here IS the empty-fleet
+	// incident again, one layer down. Filled one at a time because there is
+	// nothing to enumerate: identity-api answers for a token by id without
+	// privilege, which is what makes this possible at all.
+	filled, err := s.fillEntitledGaps(ctx, byToken)
+	if err != nil {
+		return nil, err
+	}
+	report.EntitledFilled = filled
 	report.VehiclesSeen = len(byToken)
 
 	tokens := make([]int64, 0, len(byToken))
@@ -159,6 +178,53 @@ func (s *RosterService) Reconcile(ctx context.Context, dryRun bool) (*ReconcileR
 	}
 
 	return report, nil
+}
+
+// fillEntitledGaps adds vehicles named by an active entitlement that the
+// licence sweep did not return, fetching each by token id.
+//
+// A missing one is reported and skipped, never fatal: an entitlement pointing
+// at a token identity-api does not know is a data problem to surface, not a
+// reason to abandon the whole reconcile.
+func (s *RosterService) fillEntitledGaps(ctx context.Context, byToken map[int64]gateway.RosterVehicle) (int, error) {
+	rows, err := s.pdb.DBS().Reader.QueryContext(ctx,
+		`SELECT DISTINCT vehicle_token_id FROM vehicle_entitlements WHERE revoked_at IS NULL`)
+	if err != nil {
+		return 0, fmt.Errorf("list entitled token ids: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var missing []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, fmt.Errorf("scan entitled token id: %w", err)
+		}
+		if _, ok := byToken[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	sort.Slice(missing, func(i, j int) bool { return missing[i] < missing[j] })
+
+	filled := 0
+	for _, id := range missing {
+		v, verr := s.identity.VehicleDetail(id)
+		if verr != nil {
+			s.logger.Warn().Err(verr).Int64("vehicle_token_id", id).
+				Msg("entitled vehicle not resolvable from identity-api; roster will not hold it")
+			continue
+		}
+		byToken[id] = *v
+		filled++
+	}
+	if filled > 0 {
+		s.logger.Info().Int("count", filled).
+			Msg("entitled vehicles filled individually — not privileged to any licence we hold")
+	}
+	return filled, nil
 }
 
 // licenceClientIDs lists every developer-licence client id this service holds.

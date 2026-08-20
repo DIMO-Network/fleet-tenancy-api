@@ -33,6 +33,10 @@ type fakeIdentity struct {
 	// stand-in for the whole IdentityAPI surface.
 	privileged    map[string][]gateway.RosterVehicle
 	privilegedErr error
+
+	// Single-vehicle lookups, for the roster's entitled-gap fill.
+	details   map[int64]gateway.RosterVehicle
+	detailErr error
 }
 
 func (f *fakeIdentity) RedirectURIForClientID(string) (string, error) { return f.uri, f.err }
@@ -52,6 +56,17 @@ func (f *fakeIdentity) PrivilegedVehicles(clientID string) ([]gateway.RosterVehi
 		return nil, f.privilegedErr
 	}
 	return f.privileged[clientID], nil
+}
+
+func (f *fakeIdentity) VehicleDetail(tokenID int64) (*gateway.RosterVehicle, error) {
+	if f.detailErr != nil {
+		return nil, f.detailErr
+	}
+	v, ok := f.details[tokenID]
+	if !ok {
+		return nil, gateway.ErrVehicleNotFound
+	}
+	return &v, nil
 }
 
 func credService(t *testing.T, settings *config.Settings) (*CredentialService, context.Context) {
