@@ -4,7 +4,9 @@ Status: **steps 1–3 done and live; step 4 half done; step 5 not started.**
 Rewritten 2026-08-19. Step 1 shipped as fleet-lite `v0.16.0`, step 2 as
 `v0.17.0`, step 3 as fleet-tenancy-api `v0.15.0` — the roster holds 619 rows and
 reconciles nightly at 04:00. Step 4's endpoint is released here (`v0.16.0`, device ids
-added in `v0.18.0`) and **no reader is cut over yet**; that is the next action. The paragraphs below
+added in `v0.18.0`) and the reader is released in fleet-lite `v0.19.0` with its
+flag off. **The flip is the next action**, and it is waiting on a decision about
+the plan's unmeasurable p99 gate. The paragraphs below
 record why the first draft deferred this work and why that deferral was
 withdrawn — kept because the reasoning still governs steps 4 and 5.
 
@@ -474,7 +476,69 @@ The query was verified against prod identity-api before release — a real
 `syntheticDevice.tokenId` and a null `aftermarketDevice` on the same page, which
 is the case the parser has to get right.
 
-**Not done and deliberately not started here:** the readers. fleet-lite behind
+#### The reader is built and released, flag off — fleet-lite-app `v0.19.0`
+
+`VEHICLE_METADATA_FROM_TENANCY`, shipped `false`. Metadata moves; the set does
+not. The local row is still read either way — it holds the last GPS fix and
+favourites, which are app-local and are not in the roster — so the cutover
+changes which source answers which field rather than removing a query.
+
+Precedence, and the one that is not obvious: **VIN and plate prefer the roster
+and fall back to the local row.** identity-api serves neither, so the roster's
+copies are usually empty today while fleet-lite's registration-attestation sync
+has filled its own. Preferring without a fallback would blank a plate a customer
+can already see; the fallback starts yielding roster values the moment kaufmann
+feeds them.
+
+The metadata cache is per tenant and **filled by misses**, not all-or-nothing. A
+whole-response cache keyed by tenant would answer a newly-entitled vehicle with
+"no metadata" for up to its TTL — the set fresh and the metadata behind it,
+which is this plan's own failure shape in miniature. Its TTL is 5 minutes and
+deliberately NOT equal to `entitledTTL`/`membershipTTL`, which are asserted equal
+*to each other* because they gate the set. Stale metadata can only age a make
+and model; it can never remove a vehicle. A test asserts the inequality so
+nobody tidies it into one constant.
+
+#### The pre-flight, measured before any flip
+
+The roster's device ids were empty until a reconcile ran with `v0.18.0` — the
+nightly job would have filled them at 04:00, and flipping before that would have
+blanked every connection indicator. Run manually: `licences=10
+vehicles_seen=619 updated=619 owner_changes=0`, giving **458 synthetic, 99
+aftermarket, 62 genuinely unpaired**.
+
+Then the roster was compared against what fleet-lite renders today, across the
+609 vehicles both hold:
+
+| | |
+|---|---|
+| connection indicator differs | **0** |
+| make/model differs | **0** |
+| in fleet-lite, not in the roster | 19 |
+
+**The blast radius is one tenant.** `resolvesFromTenancy` is true only for
+tenants holding no client id of their own, which in prod is TRAST alone — nine
+vehicles. All nine are in the roster with make, model and a synthetic device id,
+so the flip is a verified no-op for the only tenant it reaches. The 19
+roster-missing tokens belong to self-serve tenants, which take the local path
+and are untouched by the flag.
+
+#### What the flip is waiting on
+
+**The plan asks for p99 on `/v1/authz` before and after, and that cannot be
+measured today.** Neither service has request-latency instrumentation:
+`MONITORING_PORT` is set in both charts and nothing serves `/metrics` in
+fleet-tenancy-api. The gate as written is unmeetable, and skipping it silently
+is how a gate becomes decoration.
+
+It is worth keeping in proportion. The p99 concern is about this service
+becoming load-bearing for *every* fleet render; today the flag reaches one
+tenant and nine vehicles, and a steady-state render adds zero calls because the
+metadata cache is filled by misses. So the choice is a real one rather than a
+formality: instrument first and meet the gate, or flip for one tenant now and
+instrument before the population grows.
+
+**Not done:** the flip itself, and the readers after it. fleet-lite behind
 its flag, then kaufmann's b2b-facing reads, then `fleets_lite.vehicles` narrowed
 to app-local columns. Nothing calls this endpoint yet, so releasing it changes
 no behaviour anywhere — which is the point of shipping it separately from the
