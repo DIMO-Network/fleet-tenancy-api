@@ -55,6 +55,32 @@ type RosterVehicle struct {
 	Model        string
 	Year         int
 	MintedAt     *time.Time
+
+	// SyntheticDeviceTokenID and AftermarketDeviceTokenID are nil when the
+	// chain says no such device is paired. Nil is a fact here, not an absence:
+	// it is what makes an unpaired vehicle distinguishable from a connected
+	// one, which is the whole reason the roster carries them.
+	SyntheticDeviceTokenID   *int64
+	AftermarketDeviceTokenID *int64
+}
+
+// deviceNode is the sliver of identity-api's device nodes the roster reads.
+//
+// A node can come back present with tokenId 0 as well as absent — fleet-lite's
+// own list view guards on `tokenId > 0` rather than on presence, and copying
+// that guard here is what stops a zeroed node being recorded as a real device.
+type deviceNode struct {
+	TokenID int64 `json:"tokenId"`
+}
+
+// tokenID returns the device's token id, or nil when there is no device. Zero
+// counts as no device, matching the guard fleet-lite renders with.
+func (d *deviceNode) tokenID() *int64 {
+	if d == nil || d.TokenID <= 0 {
+		return nil
+	}
+	id := d.TokenID
+	return &id
 }
 
 type identityAPIService struct {
@@ -191,10 +217,15 @@ func (i *identityAPIService) VehicleOwner(tokenID int64) (string, error) {
 // Format args: 1=clientID, 2=page size, 3=after-cursor (a quoted string, or the
 // bare word null for the first page).
 //
-// Shaped after fleet-lite's VehiclesByPrivilegeAndCursorQuery, minus the device
-// nodes: the roster records what a vehicle is and who owns it, and a paired
-// device is neither. Asking for less also keeps the sweep's response size down,
-// and it is swept over every tenant's licence.
+// Shaped after fleet-lite's VehiclesByPrivilegeAndCursorQuery. The device nodes
+// are here for their TOKEN IDS ONLY — whether a vehicle is connected, and by
+// what. Step 3 left them out on the argument that "a paired device is not what
+// a vehicle is"; step 4 put them back, because fleet-lite's list renders a
+// connection indicator from exactly these two ids and a roster without them
+// cannot replace the local row without blanking it.
+//
+// Still deliberately narrow: no serial, no IMEI, no device mint time. Those
+// belong to kaufmann's device table, which is the boundary this plan drew.
 const privilegedVehiclesQuery = `{
 	vehicles(filterBy: {privileged: %q}, first: %d, after: %s) {
 		nodes {
@@ -202,6 +233,8 @@ const privilegedVehiclesQuery = `{
 			owner
 			mintedAt
 			definition { id make model year }
+			syntheticDevice { tokenId }
+			aftermarketDevice { tokenId }
 		}
 		pageInfo { hasNextPage endCursor }
 	}
@@ -271,6 +304,8 @@ func (i *identityAPIService) PrivilegedVehicles(clientID string) ([]RosterVehicl
 							Model string `json:"model"`
 							Year  int    `json:"year"`
 						} `json:"definition"`
+						SyntheticDevice   *deviceNode `json:"syntheticDevice"`
+						AftermarketDevice *deviceNode `json:"aftermarketDevice"`
 					} `json:"nodes"`
 					PageInfo struct {
 						HasNextPage bool   `json:"hasNextPage"`
@@ -296,11 +331,13 @@ func (i *identityAPIService) PrivilegedVehicles(clientID string) ([]RosterVehicl
 
 		for _, n := range res.Data.Vehicles.Nodes {
 			v := RosterVehicle{
-				TokenID:      n.TokenID,
-				DefinitionID: n.Definition.ID,
-				Make:         n.Definition.Make,
-				Model:        n.Definition.Model,
-				Year:         n.Definition.Year,
+				TokenID:                  n.TokenID,
+				DefinitionID:             n.Definition.ID,
+				Make:                     n.Definition.Make,
+				Model:                    n.Definition.Model,
+				Year:                     n.Definition.Year,
+				SyntheticDeviceTokenID:   n.SyntheticDevice.tokenID(),
+				AftermarketDeviceTokenID: n.AftermarketDevice.tokenID(),
 			}
 			// A malformed owner is dropped rather than stored. The roster's
 			// whole purpose is that this column is trustworthy; writing
@@ -346,6 +383,8 @@ const vehicleDetailQuery = `{
 		owner
 		mintedAt
 		definition { id make model year }
+		syntheticDevice { tokenId }
+		aftermarketDevice { tokenId }
 	}
 }`
 
@@ -392,6 +431,8 @@ func (i *identityAPIService) VehicleDetail(tokenID int64) (*RosterVehicle, error
 					Model string `json:"model"`
 					Year  int    `json:"year"`
 				} `json:"definition"`
+				SyntheticDevice   *deviceNode `json:"syntheticDevice"`
+				AftermarketDevice *deviceNode `json:"aftermarketDevice"`
 			} `json:"vehicle"`
 		} `json:"data"`
 		Errors []struct {
@@ -410,11 +451,13 @@ func (i *identityAPIService) VehicleDetail(tokenID int64) (*RosterVehicle, error
 
 	n := res.Data.Vehicle
 	out := &RosterVehicle{
-		TokenID:      n.TokenID,
-		DefinitionID: n.Definition.ID,
-		Make:         n.Definition.Make,
-		Model:        n.Definition.Model,
-		Year:         n.Definition.Year,
+		TokenID:                  n.TokenID,
+		DefinitionID:             n.Definition.ID,
+		Make:                     n.Definition.Make,
+		Model:                    n.Definition.Model,
+		Year:                     n.Definition.Year,
+		SyntheticDeviceTokenID:   n.SyntheticDevice.tokenID(),
+		AftermarketDeviceTokenID: n.AftermarketDevice.tokenID(),
 	}
 	if common.IsHexAddress(n.Owner) {
 		out.Owner = common.HexToAddress(n.Owner).Hex()

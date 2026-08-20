@@ -37,6 +37,17 @@ type VehicleMetadata struct {
 	VIN            string     `json:"vin,omitempty"`
 	LicensePlate   string     `json:"licensePlate,omitempty"`
 
+	// SyntheticDeviceTokenID and AftermarketDeviceTokenID say whether the
+	// vehicle is connected, and by what. Null means the chain reports no such
+	// device — a fact, not a gap, and the difference a caller renders a
+	// connection indicator from.
+	//
+	// Token ids only. Serial, IMEI and the device's own mint time belong to
+	// kaufmann's device table; this is the roster, and the boundary between
+	// them is what plan 07 draws.
+	SyntheticDeviceTokenID   *int64 `json:"syntheticDeviceTokenId,omitempty"`
+	AftermarketDeviceTokenID *int64 `json:"aftermarketDeviceTokenId,omitempty"`
+
 	// ReconciledAt is when identity-api last confirmed this row, so a caller
 	// can see staleness as a timestamp instead of inferring it. UnseenSince is
 	// set when no licence we hold returned the vehicle any more — usually a

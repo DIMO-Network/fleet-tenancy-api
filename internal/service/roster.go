@@ -289,9 +289,10 @@ func (s *RosterService) currentOwners(ctx context.Context) (map[int64]string, er
 func (s *RosterService) upsert(ctx context.Context, v gateway.RosterVehicle, now time.Time, isNew bool, prevOwner string) error {
 	_, err := s.pdb.DBS().Writer.ExecContext(ctx,
 		`INSERT INTO vehicles (vehicle_token_id, owner, definition_id, make, model, year,
-		                       minted_at, first_seen_at, reconciled_at, unseen_since, updated_at)
+		                       minted_at, synthetic_device_token_id, aftermarket_device_token_id,
+		                       first_seen_at, reconciled_at, unseen_since, updated_at)
 		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''),
-		         NULLIF($6, 0), $7, $8, $8, NULL, $8)
+		         NULLIF($6, 0), $7, $9, $10, $8, $8, NULL, $8)
 		 ON CONFLICT (vehicle_token_id) DO UPDATE SET
 		     owner         = COALESCE(NULLIF(EXCLUDED.owner, ''), vehicles.owner),
 		     definition_id = COALESCE(NULLIF(EXCLUDED.definition_id, ''), vehicles.definition_id),
@@ -299,13 +300,22 @@ func (s *RosterService) upsert(ctx context.Context, v gateway.RosterVehicle, now
 		     model         = COALESCE(NULLIF(EXCLUDED.model, ''), vehicles.model),
 		     year          = COALESCE(EXCLUDED.year, vehicles.year),
 		     minted_at     = COALESCE(EXCLUDED.minted_at, vehicles.minted_at),
+		     -- Device ids are OVERWRITTEN, including to NULL, where every
+		     -- column above is filled forward. The difference is who the source
+		     -- is: identity-api serves these and does not serve VIN or plate, so
+		     -- a NULL here is the chain saying "nothing is paired" rather than
+		     -- "we did not read it". Filling them forward would leave a vehicle
+		     -- reading as connected forever after its device was unpaired.
+		     synthetic_device_token_id   = EXCLUDED.synthetic_device_token_id,
+		     aftermarket_device_token_id = EXCLUDED.aftermarket_device_token_id,
 		     reconciled_at = EXCLUDED.reconciled_at,
 		     -- Seen again, so it is no longer unseen. Set unconditionally: a
 		     -- vehicle that reappears after an SACD was restored must clear
 		     -- this, or the column records the first loss forever.
 		     unseen_since  = NULL,
 		     updated_at    = EXCLUDED.updated_at`,
-		v.TokenID, v.Owner, v.DefinitionID, v.Make, v.Model, v.Year, v.MintedAt, now)
+		v.TokenID, v.Owner, v.DefinitionID, v.Make, v.Model, v.Year, v.MintedAt, now,
+		v.SyntheticDeviceTokenID, v.AftermarketDeviceTokenID)
 	if err != nil {
 		return fmt.Errorf("upsert vehicle %d: %w", v.TokenID, err)
 	}

@@ -143,3 +143,67 @@ func TestMetadataServesVinAndPlateWhenPresent(t *testing.T) {
 	assert.Empty(t, got[1].VIN)
 	assert.Empty(t, got[1].LicensePlate)
 }
+
+// Device token ids are what a caller renders a connection indicator from —
+// fleet-lite's list guards on `tokenId > 0`. Without them in the roster, a
+// cutover blanks that indicator for every vehicle, which is why step 4 added
+// the columns before touching any reader.
+func TestMetadataServesDeviceTokenIDs(t *testing.T) {
+	synthetic := int64(55501)
+	aftermarket := int64(55502)
+
+	paired := rv(4601, ownerNew, "Maxus", "T60")
+	paired.SyntheticDeviceTokenID = &synthetic
+	paired.AftermarketDeviceTokenID = &aftermarket
+
+	id := &fakeIdentity{privileged: map[string][]gateway.RosterVehicle{
+		licA: {paired, rv(4602, ownerNew, "Ford", "Ranger")},
+	}}
+	svc, _, ctx := rosterSvc(t, id)
+	_, err := svc.Reconcile(ctx, false)
+	require.NoError(t, err)
+
+	got, err := svc.Metadata(ctx, []int64{4601, 4602})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+
+	require.NotNil(t, got[0].SyntheticDeviceTokenID)
+	assert.Equal(t, synthetic, *got[0].SyntheticDeviceTokenID)
+	require.NotNil(t, got[0].AftermarketDeviceTokenID)
+	assert.Equal(t, aftermarket, *got[0].AftermarketDeviceTokenID)
+
+	assert.Nil(t, got[1].SyntheticDeviceTokenID, "an unpaired vehicle says so")
+	assert.Nil(t, got[1].AftermarketDeviceTokenID)
+}
+
+// THE ONE THAT MAKES DEVICE IDS DIFFERENT FROM VIN AND PLATE. Unpairing is a
+// real event, and the roster must show it. VIN and plate are filled forward
+// because identity-api does not serve them; these it does, so a null from the
+// chain is an answer and must overwrite.
+func TestReconcileClearsUnpairedDevice(t *testing.T) {
+	synthetic := int64(55503)
+	paired := rv(4701, ownerNew, "Maxus", "T60")
+	paired.SyntheticDeviceTokenID = &synthetic
+
+	id := &fakeIdentity{privileged: map[string][]gateway.RosterVehicle{
+		licA: {paired},
+	}}
+	svc, _, ctx := rosterSvc(t, id)
+	_, err := svc.Reconcile(ctx, false)
+	require.NoError(t, err)
+
+	got, err := svc.Metadata(ctx, []int64{4701})
+	require.NoError(t, err)
+	require.NotNil(t, got[0].SyntheticDeviceTokenID, "paired to begin with")
+
+	// The device is unpaired on chain.
+	id.privileged[licA] = []gateway.RosterVehicle{rv(4701, ownerNew, "Maxus", "T60")}
+	_, err = svc.Reconcile(ctx, false)
+	require.NoError(t, err)
+
+	got, err = svc.Metadata(ctx, []int64{4701})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Nil(t, got[0].SyntheticDeviceTokenID,
+		"the roster follows the chain; a filled-forward id would read as connected forever")
+}
