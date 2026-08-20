@@ -201,7 +201,7 @@ every comment in the file**. Two explanatory comments were gone one commit after
 they landed. Durable rationale belongs in `templates/cronjobs.yaml`, which is
 not rewritten (fleet-lite-app#135).
 
-### 2. Stop the freshness mixing — DONE 2026-08-19, merged, not yet released
+### 2. Stop the freshness mixing — DONE, released `v0.17.0` 2026-08-20
 
 Resolve the set and its gates together, here: entitled ∩ active memberships ∩
 group scope. `fleets_lite.vehicles` stops being authoritative for set membership
@@ -215,8 +215,7 @@ into nine vehicles with thin metadata.
 the bug somewhere harder to see — the set will be provably correct while the
 response is still short. Not done unless the missing-row case has a test.
 
-**Shipped in fleet-lite-app#136**, merged 2026-08-19, **not yet released** —
-prod runs `v0.16.0` until a `v*` tag is cut. No new endpoint was needed here:
+**Shipped in fleet-lite-app#136**, released as `v0.17.0` on 2026-08-20. No new endpoint was needed here:
 all three gates were already exposed and already called, and the mixing existed
 only because the set came from a different place than the gates. So this too
 landed entirely in fleet-lite-app.
@@ -240,7 +239,7 @@ Verified against prod: for TRAST, `RESOLVED_COUNT=9` with
 rather than passing through — and an empty group scope resolved to 0 against
 real group data.
 
-### 3. Stand up the roster, reconciled from the chain — BUILT 2026-08-19, not deployed
+### 3. Stand up the roster, reconciled from the chain — DONE, LIVE IN PROD 2026-08-20
 
 A `vehicles` table here keyed by `vehicle_token_id`, populated and refreshed from
 identity-api, holding owner, definition, `minted_at`, VIN and plate. Reconciliation
@@ -255,9 +254,9 @@ kaufmann-only tokens are diagnostic and should be read by a human once.
 launders a known error into the new source of truth. Seed from the chain, and
 diff against both existing tables as a check rather than a source.
 
-**Built 2026-08-19 (fleet-tenancy-api), not yet deployed.** `vehicles` keyed by
-`vehicle_token_id`, `vehicle_owner_changes` beside it, a `reconcile-vehicles`
-command and a 04:00 CronJob.
+**Released as `v0.15.0`, 2026-08-20 02:05 UTC, and the roster is populated.**
+`vehicles` keyed by `vehicle_token_id`, `vehicle_owner_changes` beside it, a
+`reconcile-vehicles` command and a 04:00 CronJob.
 
 **The population is the union of privileged sets over every licence in
 `tenant_credentials`** — not `vehicle_entitlements`. Entitlements cover
@@ -345,6 +344,34 @@ and the population counts as context.
 T60s read `0x97B8bA44C66d2C893925dE41BbDF0eE9b9640E7a` — the chain's answer, not
 kaufmann's. A second run reported `inserted=0 updated=619 owner_changes=0`, so
 the steady state is quiet and a real transfer will not hide in noise.
+
+### Run in production, 2026-08-20
+
+The migration applied on boot. A `-dry-run` job was read first, as this step
+asks: `licences=10 vehicles_seen=619 inserted=619`, no licence failures, exit 0
+— matching the local prod-scale rehearsal exactly. Then the real run:
+
+```
+first  : licences=10 vehicles_seen=619 inserted=619 updated=0   owner_changes=0 entitled_filled=0
+second : licences=10 vehicles_seen=619 inserted=0   updated=619 owner_changes=0 entitled_filled=0
+```
+
+619 rows, every one with owner, `minted_at` and definition; `unseen_since` null
+throughout. `vehicle_owner_changes` holds 619 first observations and **0
+transfers** — the history starts where we started looking, which is the honest
+place for it to start.
+
+**In prod, `fleet_tenancy_api.vehicles` now says `0x97B8bA44…` for 192379,
+192400 and 192401.** `kaufmann_oracle.vins` still says `0xDA13fE28…` and was not
+touched: this service reconciles its own table and does not write across a
+schema boundary. Step 5 removes that column once nothing reads it.
+
+`entitled_filled=0` — all nine active entitlements were covered by the licence
+sweep, so the individual-lookup path did not fire. It is insurance for step 4
+rather than something prod needs today.
+
+**Nothing reads this table yet.** It is populated and reconciling nightly at
+04:00; the reader cutover is step 4.
 
 ### 4. Cut the readers over
 

@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus
 `fleet-lite-app/docs/operator-tenancy/` (the full design set — it is gitignored
 in this repo until the weaknesses it documents are fixed).
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 02:00 UTC*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 02:15 UTC*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -2409,7 +2409,7 @@ sent. Unchanged by this session.
 
 ---
 
-## PICK UP HERE — session handoff, 2026-08-20 ~02:00 UTC
+## Session handoff, 2026-08-20 ~02:00 UTC — step 3 pre-deploy, kept for the coverage analysis
 
 Plan 07 steps 1–3 are done. **Two things are waiting on a human**, both
 deliberate:
@@ -2526,6 +2526,123 @@ Related, and the reason chart rationale keeps moving into templates: the
 version-bump workflow round-trips `values.yaml` and **strips every comment**.
 
 ### Still true, unchanged by this session
+
+**Nothing about vehicle sharing has been exercised** — still no UserOp ever
+sent. Plan 06 (signer-key consolidation) is unstarted; its step 1 is read-only
+and cheap.
+
+---
+
+## PICK UP HERE — session handoff, 2026-08-20 ~02:15 UTC
+
+**Plan 07 steps 1, 2 and 3 are done, released and running in production.**
+Nothing is half-finished and nothing is waiting on a human. Start with **step 4
+— cut the readers over**, or with plan 06 step 1, which is read-only and cheap.
+
+### State of the world
+
+| | released | in prod |
+|---|---|---|
+| 1. Trustworthy refresh, loud failures | fleet-lite-app `v0.16.0` | sync-vehicles syncs every tenant, fails loudly on a skip |
+| 2. Stop the freshness mixing | fleet-lite-app `v0.17.0` | vehicle set resolved from tenancy, metadata joined |
+| 3. Stand up the roster | fleet-tenancy-api `v0.15.0` | `vehicles` holds 619 rows, reconciling nightly at 04:00 |
+| 4. Cut the readers over | — | not started |
+| 5. Shrink `vins` | — | not started |
+
+The incident is closed at every layer it had: the sync runs, its failures are
+loud, the set and its gates share one freshness, and the chain's answer about
+ownership is held once and re-read.
+
+### What is true in prod right now
+
+- `fleet_tenancy_api.vehicles`: 619 rows, all with owner, `minted_at` and
+  definition. `unseen_since` null throughout. `vehicle_owner_changes` holds 619
+  first observations and 0 transfers.
+- **192379, 192400, 192401 read `0x97B8bA44…`** — the chain's answer.
+  `kaufmann_oracle.vins` still says `0xDA13fE28…` and was deliberately not
+  touched. Step 5 drops that column once nothing reads it.
+- `reconcile-vehicles` is on `0 4 * * *`, `backoffLimit: 0`, three-day TTL.
+  Two consecutive prod runs gave `inserted=619` then `inserted=0 updated=619
+  owner_changes=0`, so the steady state is quiet.
+- **Nothing reads the roster yet.** That is step 4.
+
+### Step 4 — read this before starting
+
+The plan says to do it behind a flag per reader, as `GROUPS_FROM_TENANCY` was.
+**Take that seriously**: step 2 shipped without a flag by explicit decision, and
+its revert path is a release. Step 4 is strictly larger — it makes this service
+load-bearing for every fleet page render — so the flag is the difference between
+a config flip and an incident.
+
+Three things already learned that step 4 inherits:
+
+1. **The set and every gate over it must age together.** Step 2's entitled read
+   is cached at 60s because the membership gate and group index are; a live set
+   against stale gates is the same mixing with the staleness on the other foot.
+   `entitledTTL` is asserted equal to `membershipTTL` in a test. Any new leg of
+   that intersection must join the same TTL.
+2. **A token in the resolved set with no metadata must still appear.** Step 2
+   guarantees this with `MetadataPending`; step 4 must keep it when metadata
+   moves to the roster. An inner join gives a provably correct set and a short
+   response — the same bug, harder to see.
+3. **An entitled vehicle is always in the roster**, guaranteed by the
+   individual-lookup fill in `reconcile-vehicles`. It reported
+   `entitled_filled=0` in prod because all nine entitlements are covered by the
+   licence sweep — it is insurance for exactly this step.
+
+### The known, bounded gap
+
+The roster holds 619 of the 655 tokens the two source tables hold between them.
+The 45 it misses are vehicles **no licence we hold is privileged on** — the
+plan's own words for the kaufmann-only 27 are "onboarded, not in any synced
+fleet". None is entitled to anybody, so no customer is affected.
+
+Bounded rather than closed, deliberately: identity-api answers
+`vehicle(tokenId:)` without privilege, so each of the 45 is *reachable* — what
+is missing is a way to *learn* their ids, since only kaufmann's table names them
+and this service cannot read that schema. If it ever matters, the fix is
+kaufmann publishing its onboarded token ids, not this service reaching across a
+schema boundary.
+
+### Traps this repo has now paid for twice — do not relearn them
+
+- **Merging does not deploy.** `values.yaml` is bumped by `buildpushdev` on
+  merge, but prod's tag lives in `values-prod.yaml` and only moves on a **`v*`
+  tag**. A change touching code *and* chart ships the chart immediately and the
+  code not at all. That happened on 2026-08-19 and left a CronJob firing against
+  an image that had never heard of its subcommand.
+- **ArgoCD `Synced/Healthy` is not evidence the code deployed.** It was Synced
+  at the version-bump revision the whole time the binary was stale. Check the
+  image tag on the workload.
+- **The version-bump workflow strips every comment from `values.yaml`.**
+  Durable rationale goes in `templates/cronjobs.yaml`.
+- **Helm's `default` treats 0 as empty**, so `backoffLimit: 0` is silently
+  replaced by 1. Both charts now use `hasKey`. fleet-lite's was fixed first;
+  this one still had the bug a day later.
+- **The prod DB tunnel's cloudflared cert lasts four minutes** and re-auth is
+  interactive. Plan a session around that, or ask the operator to open it.
+
+### Running things against prod from a laptop
+
+The DB tunnel alone is not enough — `TENANCY_API_URL` and
+`IDENTITY_API_ENDPOINT` are both `.svc.cluster.local`:
+
+```sh
+ssh dimo-database-prod                                        # LocalForward 5430
+kubectl -n prod port-forward svc/fleet-tenancy-api 18084:8084
+kubectl -n prod port-forward svc/identity-api-prod 18080:8080
+```
+
+Build `settings.yaml` from the service's configmap + secret, then override the
+three hostnames. Two traps: `DB_*` env keys collapse into a nested `DB:` block
+(`USER`/`PASSWORD`/`HOST`/`PORT`/`NAME`/`SSL_MODE`), and ints and bools must be
+unquoted or `LoadConfig` refuses the file. Per-service DB users are
+schema-scoped — take each service's own credentials from its own secret.
+
+`scripts/roster-diagnostic.sh` wraps the cross-service comparison and writes
+nothing; it was last run 2026-08-19 22:00 UTC and reported 3 / 27 / 179.
+
+### Still true, unchanged
 
 **Nothing about vehicle sharing has been exercised** — still no UserOp ever
 sent. Plan 06 (signer-key consolidation) is unstarted; its step 1 is read-only
