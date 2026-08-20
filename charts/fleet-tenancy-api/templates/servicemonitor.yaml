@@ -1,0 +1,43 @@
+{{/*
+Rationale lives HERE, not in values.yaml: the version-bump workflow round-trips
+that file through a YAML parser on every merge and strips every comment in it.
+
+This is what makes the service's four golden signals visible. It scrapes
+/metrics on the mon-http port, which is a SEPARATE listener from /v1 — the /v1
+group is gated by a trusted-caller key and a developer JWT, and Prometheus has
+neither.
+
+The metric names match the cluster's existing go-fiber-dashboard.json, so that
+dashboard works for this service as well as the dedicated one.
+
+THE PORT NAME `mon-http` IS LOAD-BEARING, and not a style choice. The prod
+namespace sets config.linkerd.io/default-inbound-policy: deny, and the cluster's
+shared namespace-wide Server named `metrics-port` selects every pod and matches
+the port NAME `mon-http` — verified against prod: podSelector matchLabels {}.
+Rename the port and the scrape starts failing with an empty-bodied 403 from the
+proxy that looks like the app rejecting the request, which is exactly how the
+webhook port failed once already (see linkerd-policy.yaml). Naming it `mon-http`
+is why this needs no Server/ServerAuthorization pair of its own.
+*/}}
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "fleet-tenancy-api.fullname" . }}-monitor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fleet-tenancy-api.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+    {{- include "fleet-tenancy-api.selectorLabels" . | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+  - port: {{ .Values.serviceMonitor.port }}
+    {{- if .Values.serviceMonitor.interval }}
+    interval: {{ .Values.serviceMonitor.interval }}
+    {{- end }}
+    path: {{ .Values.serviceMonitor.path | quote }}
+{{- end }}

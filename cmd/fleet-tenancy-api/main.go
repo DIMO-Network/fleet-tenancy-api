@@ -16,8 +16,11 @@ import (
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/sharing"
 	"github.com/DIMO-Network/shared/pkg/db"
 	ssettings "github.com/DIMO-Network/shared/pkg/settings"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"github.com/google/subcommands"
 	_ "github.com/lib/pq"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/riverqueue/river"
 	"github.com/rs/zerolog"
 )
@@ -125,6 +128,31 @@ func main() {
 		defer cancel()
 		if err := shareQueue.Stop(stopCtx); err != nil {
 			logger.Error().Err(err).Msg("vehicle-sharing job queue did not stop cleanly")
+		}
+	}()
+
+	// Prometheus scraping, on its own listener and its own port.
+	//
+	// Separate from /v1 for the same reason the webhook surface is: the /v1
+	// group is gated by a trusted-caller key and a developer JWT, and metrics
+	// must be scrapable by the cluster without either. It also keeps the
+	// scrape off the port that serves the hot path.
+	//
+	// Not fatal on failure. This service is what two apps fail closed on, and
+	// refusing to boot because a metrics listener could not bind would turn an
+	// observability problem into an outage — the exact inversion this whole
+	// service is careful about elsewhere.
+	monitoringPort := settings.MonitoringPort
+	if monitoringPort == 0 {
+		monitoringPort = 8085
+	}
+	go func() {
+		mon := fiber.New(fiber.Config{DisableStartupMessage: true})
+		mon.Get("/", func(_ *fiber.Ctx) error { return nil })
+		mon.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
+		logger.Info().Int("port", monitoringPort).Msg("starting monitoring listener")
+		if lerr := mon.Listen(":" + strconv.Itoa(monitoringPort)); lerr != nil {
+			logger.Error().Err(lerr).Msg("monitoring listener failed; metrics are not being served")
 		}
 	}()
 

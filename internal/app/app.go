@@ -51,6 +51,10 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 		DisableStartupMessage: true,
 	})
 	app.Use(fiberrecover.New(fiberrecover.Config{EnableStackTrace: true}))
+	// Registered before every route, including /health, so a probe that starts
+	// failing is visible in the same place as everything else. See metrics.go
+	// for why the label is the route pattern and never the URL.
+	app.Use(NewMetricsMiddleware())
 
 	app.Get("/health", healthCheck)
 	app.Get("/version", getVersion)

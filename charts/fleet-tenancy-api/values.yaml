@@ -67,12 +67,19 @@ service:
       port: 8087
       targetPort: webhook
       protocol: TCP
+    mon-http:
+      port: 8085
+      targetPort: mon-http
+      protocol: TCP
 ports:
   - name: http
     containerPort: 8084
     protocol: TCP
   - name: webhook
     containerPort: 8087
+    protocol: TCP
+  - name: mon-http
+    containerPort: 8085
     protocol: TCP
 resources:
   requests:
@@ -104,3 +111,8 @@ cronJobs:
     ttlSecondsAfterFinished: 259200
     script: |
       /fleet-tenancy-api reconcile-vehicles
+serviceMonitor:
+  enabled: true
+  path: /metrics
+  port: mon-http
+  interval: 30s
