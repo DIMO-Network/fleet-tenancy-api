@@ -566,7 +566,11 @@ interchangeable:
   whether to fire `PATCH /v1/fleet/vehicles/{tokenID}/owner`. Serving the
   roster's owner would compare two values both reconciled from identity, so they
   would agree, drift would stop being detected, and `vins.owner` would rot
-  silently behind a UI showing a value nothing writes.
+  silently behind a UI showing a value nothing writes. **Decided 2026-08-20:
+  owner does move eventually** — but as its own step, after the drift-detection
+  flow is redesigned around the roster being the comparison baseline instead of
+  a live identity read. Until then it stays local on purpose, not as an
+  oversight.
 - **`vin` and `license_plate`.** **The roster's columns have no writer.** The
   migration reserves them for kaufmann to fill and the read path serves them,
   but nothing writes them and there is no backfill, so they are NULL on all 619
