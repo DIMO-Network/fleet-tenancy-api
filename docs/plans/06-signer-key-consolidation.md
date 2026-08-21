@@ -260,7 +260,7 @@ discovered only when customers report that transfers stopped working. This is
 the single most destructive thing in the plan and it is destroyed by one missing
 `WHERE`.
 
-### 3. A typed shared-operations endpoint here — an enum, never raw calldata
+### 3. A typed shared-operations endpoint here — an enum, never raw calldata — DONE 2026-08-21, `v0.23.0`
 
 `POST /v1/tenants/{tenantId}/vehicles/{tokenId}/shared-ops` → `202 {jobId}`,
 with `GET .../shared-ops/status?jobId=` mirroring `ShareStatus` exactly
@@ -295,6 +295,23 @@ then means "burn any vehicle in the fleet, transfer it anywhere" rather than
 "perform one of four known operations on a vehicle whose owner authorised us."
 The enum is not ergonomics — it is the security boundary, and it is very hard to
 re-narrow once a caller depends on the general form.
+
+**Shipped (#77).** Two decisions and one warning for step 4:
+
+- `grant_sacd` chains inside `transfer_vehicle` as one job: the transfer lands,
+  signer authority is re-checked against the NEW owner, and the grant aims at
+  the tenant's EFFECTIVE credential's client id — the same resolution the
+  signer lookup uses, so "whose signer signs" and "whose client id is granted"
+  cannot diverge. Best-effort like kaufmann's original: a landed transfer is
+  never recorded failed. Standalone `grant_sacd` is the recovery op.
+- The status route carries a job-KIND check in both directions: shares and
+  shared-ops sit on one queue and one id sequence, and each kind's args decode
+  into the other's cleanly enough to leak without it.
+- **Step 4 must resolve a timeout mismatch before writing its poll loop:** the
+  transfer job's window here is 15 minutes; kaufmann's transfer worker polls
+  for 10. As written, kaufmann could record a timeout on a transfer that then
+  lands — the exact chain/`vins` disagreement this step's spec warns about.
+  Widen kaufmann's transfer poll (or narrow this job's window) first.
 
 ### 4. Point kaufmann's three workers at it
 
