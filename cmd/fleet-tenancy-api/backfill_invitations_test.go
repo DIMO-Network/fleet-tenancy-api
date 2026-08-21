@@ -54,8 +54,14 @@ func seedBackfillTenant(t *testing.T, conn *sql.DB) {
 	_, err := conn.Exec(`INSERT INTO tenants (id,name,kind,entitlement_mode)
 		VALUES ($1,'Backfill Fixture','customer','explicit') ON CONFLICT (id) DO NOTHING`, bfTenant)
 	require.NoError(t, err)
+	// The scoped fixture invitation names this group; it must exist since the
+	// P5b reference rules.
+	_, err = conn.Exec(`INSERT INTO fleet_groups (id,tenant_id,name,color)
+		VALUES ($1,$2,'Vans','#112233') ON CONFLICT (id) DO NOTHING`, bfTenant+"_vans", bfTenant)
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		_, _ = conn.Exec(`DELETE FROM invitations WHERE tenant_id = $1`, bfTenant)
+		_, _ = conn.Exec(`DELETE FROM fleet_groups WHERE tenant_id = $1`, bfTenant)
 		_, _ = conn.Exec(`DELETE FROM tenants WHERE id = $1`, bfTenant)
 	})
 }

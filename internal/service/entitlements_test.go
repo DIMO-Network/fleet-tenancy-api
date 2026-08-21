@@ -25,10 +25,16 @@ func entitlementFixture(t *testing.T) (*EntitlementService, *TenantService, cont
 	svc := NewEntitlementService(&l, store)
 	tenants := NewTenantService(&l, store)
 
+	// Provenance must name a real group since the P5b reference rules.
+	_, err := store.DBS().Writer.Exec(`INSERT INTO fleet_groups (id,tenant_id,name,color)
+		VALUES ('grp-vans',$1,'Prov Vans','#112233') ON CONFLICT (id) DO NOTHING`, opTenant)
+	require.NoError(t, err)
+
 	t.Cleanup(func() {
 		_, _ = store.DBS().Writer.Exec(
 			`DELETE FROM vehicle_entitlements WHERE vehicle_token_id = ANY($1)`,
 			"{900001,900002,900003}")
+		_, _ = store.DBS().Writer.Exec(`DELETE FROM fleet_groups WHERE id = 'grp-vans'`)
 	})
 	return svc, tenants, context.Background()
 }

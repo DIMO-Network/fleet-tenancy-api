@@ -74,6 +74,13 @@ func TestMemberUpsert(t *testing.T) {
 		assert.NotNil(t, got.ScopeGroupIDs, "empty is a restriction, not an absence")
 	})
 
+	// The named groups must exist since the P5b reference rules.
+	for _, g := range []string{"_vans", "_north"} {
+		_, err := store.DBS().Writer.Exec(`INSERT INTO fleet_groups (id,tenant_id,name,color)
+			VALUES ($1,$2,$3,'#112233') ON CONFLICT (id) DO NOTHING`, opTenant+g, opTenant, "G"+g)
+		require.NoError(t, err)
+	}
+
 	t.Run("named groups round-trip", func(t *testing.T) {
 		err := svc.Upsert(ctx, opTenant, newWallet, &models.MemberWrite{
 			ScopeGroupIDs: scope(`["` + opTenant + `_vans","` + opTenant + `_north"]`),
