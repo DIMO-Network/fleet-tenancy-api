@@ -197,5 +197,12 @@ func shareWorkers(ctx context.Context, logger *zerolog.Logger, settings *config.
 	if err := river.AddWorkerSafely(workers, sharing.NewShareWorker(logger, settings, authorizer, fleetClient)); err != nil {
 		logger.Fatal().Err(err).Msg("failed to register the vehicle-share worker")
 	}
+	// The typed shared-operations worker (plan 06 step 3) shares the queue,
+	// the fleet client and the authorizer with the share worker — its extra
+	// dependency is the signer gate, which the chained post-transfer re-share
+	// needs against the NEW owner, whom AuthorizeShare never saw.
+	if err := river.AddWorkerSafely(workers, sharing.NewSharedOpWorker(logger, settings, authorizer, signerSvc, fleetClient)); err != nil {
+		logger.Fatal().Err(err).Msg("failed to register the shared-operations worker")
+	}
 	return workers
 }

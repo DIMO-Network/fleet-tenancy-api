@@ -1,21 +1,25 @@
-// Package sharing sends on-chain vehicle SACD permission grants.
+// Package sharing sends this service's server-signed on-chain operations:
+// vehicle SACD permission grants, and the typed shared-account operations of
+// plan 06 step 3 (transfer, synthetic-device burn, vehicle burn, re-grant).
 //
-// A share is one call: SACD.setPermissions0(asset, tokenId, grantee,
-// permissions, expiration, source), sent as a UserOperation from the vehicle
-// owner's ZeroDev kernel account and signed by the acting tenant's signer key.
-// The owner never signs — the kernel registered the tenant's signer as a
-// secondary weighted-ECDSA validator when the account was created, and that is
-// the whole basis on which this service may act.
+// Every one of them is a UserOperation sent from the vehicle owner's ZeroDev
+// kernel account and signed by the acting tenant's signer key. The owner never
+// signs — the kernel registered the tenant's signer as a secondary
+// weighted-ECDSA validator when the account was created, and that is the whole
+// basis on which this service may act.
 //
 // The mechanism is kaufmann-oracle's, ported: SharedAccountTransferWorker
 // re-shares a transferred vehicle back to its tenant exactly this way. What is
-// new here is that the grantee is chosen by a customer rather than being the
-// tenant itself, which is why the authorization chain around it is stricter.
+// new here is that a share's grantee is chosen by a customer rather than being
+// the tenant itself, which is why the authorization chain around it is
+// stricter.
 //
-// This file is the plumbing only — the client and its lifecycle. The call
-// construction is in call.go, the worker in worker.go, and the authorization
-// chain in internal/service/sharing.go. The decisions behind all of them are
-// recorded in docs/HANDOFF.md under "Vehicle sharing".
+// This file is the plumbing only — the client and its lifecycle. The share
+// call construction is in call.go and its worker in worker.go; the typed
+// operations are whole in shared_ops.go; the authorization chain is
+// internal/service/sharing.go. The decisions behind them are recorded in
+// docs/HANDOFF.md under "Vehicle sharing" and in
+// docs/plans/06-signer-key-consolidation.md.
 package sharing
 
 import (
@@ -42,7 +46,7 @@ const (
 // ErrNotConfigured is returned when sharing settings are absent. It is a
 // distinct error rather than a nil client so callers fail with something
 // readable instead of a panic; see Settings.SharingConfigured.
-var ErrNotConfigured = fmt.Errorf("vehicle sharing is not configured (SACD_ADDRESS, RPC_URL, BUNDLER_URL, VEHICLE_NFT_ADDRESS, CHAIN_ID)")
+var ErrNotConfigured = fmt.Errorf("vehicle sharing is not configured (SACD_ADDRESS, SYNTHETIC_NFT_ADDRESS, RPC_URL, BUNDLER_URL, VEHICLE_NFT_ADDRESS, CHAIN_ID)")
 
 // NewFleetClient builds the ZeroDev fleet client used to send UserOps from an
 // owner's kernel account.

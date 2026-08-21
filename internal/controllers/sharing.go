@@ -24,6 +24,8 @@ const maxShareableOwners = 200
 type shareQueue interface {
 	Enqueue(ctx context.Context, args sharing.ShareArgs) (int64, error)
 	Status(ctx context.Context, tenantID string, jobID int64) (*models.ShareStatus, error)
+	EnqueueSharedOp(ctx context.Context, args sharing.SharedOpArgs) (int64, error)
+	SharedOpStatus(ctx context.Context, tenantID string, jobID int64) (*models.ShareStatus, error)
 }
 
 // SharingController serves the vehicle-sharing surface: the display gate, the

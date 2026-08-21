@@ -264,6 +264,14 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// job id alone is a sequential integer anyone could walk.
 	v1.Post("/tenants/:tenantId/vehicles/:tokenId/share", sharingCtrl.ShareVehicle)
 	v1.Get("/tenants/:tenantId/vehicles/:tokenId/share/status", sharingCtrl.ShareStatus)
+	// Typed shared-account operations (plan 06 step 3): one of four named ops
+	// — transfer_vehicle, burn_synthetic, burn_vehicle, grant_sacd — signed
+	// with the tenant's signer on the owner's kernel. The body carries an
+	// enum, never calldata; the narrowness is the security boundary. Status
+	// mirrors the share status above: same shape, same tenant-scoped
+	// not-found, same reasoning about sequential job ids.
+	v1.Post("/tenants/:tenantId/vehicles/:tokenId/shared-ops", sharingCtrl.SharedOperation)
+	v1.Get("/tenants/:tenantId/vehicles/:tokenId/shared-ops/status", sharingCtrl.SharedOperationStatus)
 
 	// What the vehicles in a resolved set ARE — owner, definition, VIN, plate —
 	// read from the roster this service reconciles against the chain nightly.

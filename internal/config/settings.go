@@ -80,9 +80,18 @@ type Settings struct {
 	// feature would look configured to an operator reading the chart and be
 	// silently off to SharingConfigured, or worse, on with an address pointing
 	// at the wrong contract. All or nothing is the only state worth booting.
-	SacdAddress string  `yaml:"SACD_ADDRESS"`
-	RPCURL      url.URL `yaml:"RPC_URL"`     // secret
-	BundlerURL  url.URL `yaml:"BUNDLER_URL"` // secret
+	//
+	// SyntheticNftAddress is the SyntheticDeviceId NFT contract, the target of
+	// the burn_synthetic shared operation (plan 06 step 3). A fourth address to
+	// keep apart from the three above; the Polygon prod value matches
+	// kaufmann-oracle's SYNTHETIC_NFT_ADDRESS, which runs the same burn today.
+	// It joins the all-or-nothing set below because its absence is the
+	// dangerous kind: half-configured, a synthetic-device burn would be aimed
+	// at the zero address.
+	SacdAddress         string  `yaml:"SACD_ADDRESS"`
+	SyntheticNftAddress string  `yaml:"SYNTHETIC_NFT_ADDRESS"`
+	RPCURL              url.URL `yaml:"RPC_URL"`     // secret
+	BundlerURL          url.URL `yaml:"BUNDLER_URL"` // secret
 
 	// TrustedCallerKeys is the pre-shared key set that gates /v1, formatted
 	// "name:key,name:key". The name is for logging and revocation only; it is
@@ -154,6 +163,7 @@ func (s *Settings) IsLocal() bool {
 // a nil-pointer panic in an unconfigured environment.
 func (s *Settings) SharingConfigured() bool {
 	return s.SacdAddress != "" &&
+		s.SyntheticNftAddress != "" &&
 		s.VehicleNftAddress != "" &&
 		s.RPCURL.String() != "" &&
 		s.BundlerURL.String() != "" &&
@@ -209,15 +219,16 @@ func (s *Settings) Validate() error {
 // or aimed at the zero address fails in ways that read as a permissions bug.
 func (s *Settings) validateSharing() error {
 	present := map[string]bool{
-		"SACD_ADDRESS":        s.SacdAddress != "",
-		"RPC_URL":             s.RPCURL.String() != "",
-		"BUNDLER_URL":         s.BundlerURL.String() != "",
-		"VEHICLE_NFT_ADDRESS": s.VehicleNftAddress != "",
-		"CHAIN_ID":            s.ChainID != 0,
+		"SACD_ADDRESS":          s.SacdAddress != "",
+		"SYNTHETIC_NFT_ADDRESS": s.SyntheticNftAddress != "",
+		"RPC_URL":               s.RPCURL.String() != "",
+		"BUNDLER_URL":           s.BundlerURL.String() != "",
+		"VEHICLE_NFT_ADDRESS":   s.VehicleNftAddress != "",
+		"CHAIN_ID":              s.ChainID != 0,
 	}
 	missing := []string{}
 	any := false
-	for _, name := range []string{"SACD_ADDRESS", "RPC_URL", "BUNDLER_URL", "VEHICLE_NFT_ADDRESS", "CHAIN_ID"} {
+	for _, name := range []string{"SACD_ADDRESS", "SYNTHETIC_NFT_ADDRESS", "RPC_URL", "BUNDLER_URL", "VEHICLE_NFT_ADDRESS", "CHAIN_ID"} {
 		if present[name] {
 			any = true
 		} else {

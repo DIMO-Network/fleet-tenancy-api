@@ -45,6 +45,13 @@ func (q *Queue) Status(ctx context.Context, tenantID string, jobID int64) (*mode
 		}
 		return nil, fmt.Errorf("read share job %d: %w", jobID, err)
 	}
+	if job.Kind != (ShareArgs{}).Kind() {
+		// The queue also carries shared-operation jobs, whose args decode into
+		// ShareArgs cleanly enough (tenantId overlaps) that without this check
+		// a shared-op job would be reported here as a share. Vacuous while the
+		// queue held one kind; load-bearing since it holds two.
+		return nil, ErrJobNotFound
+	}
 
 	args, err := decodeShareArgs(job)
 	if err != nil {
@@ -71,6 +78,62 @@ func (q *Queue) Status(ctx context.Context, tenantID string, jobID int64) (*mode
 // ErrJobNotFound covers both a job that does not exist and one belonging to
 // another tenant — the caller cannot tell the two apart, which is deliberate.
 var ErrJobNotFound = errors.New("share job not found")
+
+// EnqueueSharedOp queues a typed shared-account operation and returns its job
+// id. Same queue as shares: the workers are bounded together deliberately,
+// because everything here is dominated by waiting on a bundler and this
+// process's first duty is /v1/authz.
+func (q *Queue) EnqueueSharedOp(ctx context.Context, args SharedOpArgs) (int64, error) {
+	if q == nil {
+		return 0, ErrQueueUnavailable
+	}
+	res, err := q.Client.Insert(ctx, args, nil)
+	if err != nil {
+		return 0, fmt.Errorf("enqueue shared operation: %w", err)
+	}
+	return res.Job.ID, nil
+}
+
+// SharedOpStatus reports on a queued shared operation, in exactly the shape
+// Status reports a share — the plan's requirement is that the two mirror.
+//
+// Tenant-scoped for the same reason as Status, and additionally scoped to the
+// shared-operation job kind: the two surfaces draw from one River queue with
+// one id sequence, and answering this endpoint for a share job would let the
+// two protocols blur into each other. A share job id asked about here is
+// reported not-found, exactly like another tenant's job.
+func (q *Queue) SharedOpStatus(ctx context.Context, tenantID string, jobID int64) (*models.ShareStatus, error) {
+	if q == nil {
+		return nil, ErrQueueUnavailable
+	}
+	job, err := q.Client.JobGet(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, rivertype.ErrNotFound) {
+			return nil, ErrJobNotFound
+		}
+		return nil, fmt.Errorf("read shared-op job %d: %w", jobID, err)
+	}
+	if job.Kind != (SharedOpArgs{}).Kind() {
+		return nil, ErrJobNotFound
+	}
+
+	var args SharedOpArgs
+	if err := json.Unmarshal(job.EncodedArgs, &args); err != nil {
+		return nil, fmt.Errorf("decode shared-op job %d: %w", job.ID, err)
+	}
+	if args.TenantID != tenantID {
+		// Not-found rather than forbidden, exactly as in Status: confirming
+		// the job exists would tell a caller what other tenants have run.
+		return nil, ErrJobNotFound
+	}
+
+	return &models.ShareStatus{
+		JobID:        job.ID,
+		State:        string(job.State),
+		IsSuccessful: job.State == rivertype.JobStateCompleted,
+		Errors:       jobErrors(job),
+	}, nil
+}
 
 func decodeShareArgs(job *rivertype.JobRow) (ShareArgs, error) {
 	var args ShareArgs

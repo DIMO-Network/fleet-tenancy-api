@@ -79,11 +79,12 @@ func TestNewFleetClient_ConfiguredDialsWithBundlerAsPaymaster(t *testing.T) {
 func fullySharingConfigured(t *testing.T) *config.Settings {
 	t.Helper()
 	s := &config.Settings{
-		SacdAddress:       "0x3c152B5d96769661008Ff404224d6530FCAC766d",
-		VehicleNftAddress: "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
-		RPCURL:            mustURL(t, "https://polygon-mainnet.example/v2/key"),
-		BundlerURL:        mustURL(t, "https://rpc.zerodev.example/api/v2/bundler/proj"),
-		ChainID:           137,
+		SacdAddress:         "0x3c152B5d96769661008Ff404224d6530FCAC766d",
+		SyntheticNftAddress: "0x4804e8D1661cd1a1e5dDdE1ff458A7f878c0aC6D",
+		VehicleNftAddress:   "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
+		RPCURL:              mustURL(t, "https://polygon-mainnet.example/v2/key"),
+		BundlerURL:          mustURL(t, "https://rpc.zerodev.example/api/v2/bundler/proj"),
+		ChainID:             137,
 	}
 	require.True(t, s.SharingConfigured(), "precondition: this helper must produce a configured feature")
 	return s

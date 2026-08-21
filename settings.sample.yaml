@@ -49,9 +49,15 @@ CHAIN_ID: 137
 # contract from both the registry and the VehicleId NFT above. The Polygon
 # mainnet value is 0x3c152B5d96769661008Ff404224d6530FCAC766d.
 #
+# SYNTHETIC_NFT_ADDRESS is the SyntheticDeviceId NFT contract, the target of
+# the burn_synthetic shared operation — a fourth address to keep apart from
+# the three above. The Polygon mainnet value is
+# 0x4804e8D1661cd1a1e5dDdE1ff458A7f878c0aC6D, matching kaufmann-oracle.
+#
 # RPC_URL and BUNDLER_URL carry API keys; the bundler URL doubles as the
 # paymaster URL (ZeroDev serves both from one project URL).
 SACD_ADDRESS: ""
+SYNTHETIC_NFT_ADDRESS: ""
 RPC_URL: ""
 BUNDLER_URL: ""
 
