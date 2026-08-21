@@ -46,6 +46,34 @@ type ShareVehicleResult struct {
 	JobID int64 `json:"jobId"`
 }
 
+// SharedOpInput is a request to run one typed shared-account operation on a
+// vehicle. The op field names one of four known operations — transfer_vehicle,
+// burn_synthetic, burn_vehicle, grant_sacd — and there is deliberately no way
+// to carry calldata: the narrow shape is the security boundary, and the
+// validation lives with the enum in sharing.SharedOpArgs.Validate.
+type SharedOpInput struct {
+	Op string `json:"op"`
+
+	// TargetWallet receives the vehicle. transfer_vehicle only.
+	TargetWallet string `json:"targetWallet"`
+
+	// SyntheticTokenID names the synthetic device NFT to burn. burn_synthetic
+	// only. Caller-supplied because the caller's device inventory is the live
+	// record of which device sits on which vehicle — see sharing.SharedOpArgs.
+	SyntheticTokenID int64 `json:"syntheticTokenId"`
+
+	// ActorWallet is the member behind the request, for the audit trail.
+	// Optional, unlike ShareVehicleInput.Wallet, because the expected caller
+	// is another service's background worker that checked its human at its own
+	// HTTP boundary — the same BFF split as invitations.
+	ActorWallet string `json:"actorWallet"`
+}
+
+// SharedOpResult is the 202 body: a job id to poll, exactly like a share.
+type SharedOpResult struct {
+	JobID int64 `json:"jobId"`
+}
+
 // ShareStatus reports on a queued share.
 //
 // The shape mirrors kaufmann-oracle's single-job TransferJobStatus rather than

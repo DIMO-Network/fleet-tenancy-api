@@ -33,6 +33,12 @@ var (
 	// ErrNoSignerKey means the tenant's effective credential has no signer
 	// private key stored, so there is nothing to sign with.
 	ErrNoSignerKey = errors.New("tenant has no signer key")
+
+	// ErrNoClientID means the tenant's effective credential holds no usable
+	// DIMO client id, so a SACD grant to "the tenant itself" has no address to
+	// aim at. Distinct from ErrNoCredential — a credential can exist for
+	// minting and still carry a malformed client id.
+	ErrNoClientID = errors.New("tenant's effective credential has no usable DIMO client id")
 )
 
 // ShareAuthorizer resolves and enforces everything that permits a vehicle
@@ -125,6 +131,32 @@ func (a *ShareAuthorizer) AuthorizeShare(ctx context.Context, tenantID string, t
 		return common.Address{}, nil, err
 	}
 	return owner, signerPK, nil
+}
+
+// GranteeClientID resolves the address a grant_sacd operation grants to: the
+// tenant's own DIMO client id, from its effective credential.
+//
+// The EFFECTIVE credential deliberately, not the tenant's own row. The grant
+// exists so the tenant's data access survives a transfer, and data access is
+// exercised with the license the tenant actually presents — which for an
+// operator-managed customer is its operator's. Granting a client id the tenant
+// cannot authenticate as would produce a share that looks complete on-chain
+// and does nothing. It is also the same resolution AuthorizeShare's signer
+// lookup uses, which keeps "whose signer signs" and "whose client id is
+// granted" the same answer — the property the plan calls one signer
+// resolution.
+func (a *ShareAuthorizer) GranteeClientID(ctx context.Context, tenantID string) (common.Address, error) {
+	cred, err := a.creds.Effective(ctx, tenantID)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("resolve effective credential: %w", err)
+	}
+	if !common.IsHexAddress(cred.ClientID) {
+		// Effective's SQL requires a non-NULL client id, so this is a
+		// malformed one — legacy empty strings existed in the sources and the
+		// backfill NULLs them, but the guard costs nothing.
+		return common.Address{}, ErrNoClientID
+	}
+	return common.HexToAddress(cred.ClientID), nil
 }
 
 // assertEntitled enforces the fleet boundary, and only for explicit-mode

@@ -77,12 +77,20 @@ func TestShareRoutesAreRegisteredAndGuarded(t *testing.T) {
 	}
 	v1.Post("/tenants/:tenantId/vehicles/:tokenId/share", handler)
 	v1.Get("/tenants/:tenantId/vehicles/:tokenId/share/status", handler)
+	// The typed shared-operations surface (plan 06 step 3) sits in the same
+	// boat, more so: transfer and burn are both irreversible, and burn is
+	// irreversible in a way even a grant is not.
+	v1.Post("/tenants/:tenantId/vehicles/:tokenId/shared-ops", handler)
+	v1.Get("/tenants/:tenantId/vehicles/:tokenId/shared-ops/status", handler)
 
 	const base = "/v1/tenants/aaaaaaaa-0000-0000-0000-000000000001/vehicles/42/share"
+	const opsBase = "/v1/tenants/aaaaaaaa-0000-0000-0000-000000000001/vehicles/42/shared-ops"
 
 	for _, tc := range []struct{ name, method, path string }{
 		{"share", http.MethodPost, base},
 		{"status", http.MethodGet, base + "/status?jobId=1"},
+		{"shared-ops", http.MethodPost, opsBase},
+		{"shared-ops status", http.MethodGet, opsBase + "/status?jobId=1"},
 	} {
 		t.Run(tc.name+" without a key is refused before the handler", func(t *testing.T) {
 			reached = false

@@ -41,6 +41,7 @@ env:
   ATTEST_API_URL: https://attest.dimo.zone
   CHAIN_ID: '137'
   SACD_ADDRESS: '0x3c152B5d96769661008Ff404224d6530FCAC766d'
+  SYNTHETIC_NFT_ADDRESS: '0x4804e8D1661cd1a1e5dDdE1ff458A7f878c0aC6D'
 ingress:
   enabled: false
   className: nginx

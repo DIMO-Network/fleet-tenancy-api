@@ -146,22 +146,24 @@ func TestTrustedCallerKeyStoredWithTrailingNewlineStillMatches(t *testing.T) {
 func TestSharingConfigured(t *testing.T) {
 	full := func() *Settings {
 		return &Settings{
-			SacdAddress:       "0x3c152B5d96769661008Ff404224d6530FCAC766d",
-			VehicleNftAddress: "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
-			RPCURL:            mustURL(t, "https://polygon-mainnet.example/v2/key"),
-			BundlerURL:        mustURL(t, "https://rpc.zerodev.app/api/v2/bundler/proj"),
-			ChainID:           137,
+			SacdAddress:         "0x3c152B5d96769661008Ff404224d6530FCAC766d",
+			SyntheticNftAddress: "0x4804e8D1661cd1a1e5dDdE1ff458A7f878c0aC6D",
+			VehicleNftAddress:   "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
+			RPCURL:              mustURL(t, "https://polygon-mainnet.example/v2/key"),
+			BundlerURL:          mustURL(t, "https://rpc.zerodev.app/api/v2/bundler/proj"),
+			ChainID:             137,
 		}
 	}
 
 	require.True(t, full().SharingConfigured(), "a fully populated config must be considered configured")
 
 	for name, blank := range map[string]func(*Settings){
-		"no SACD address":        func(s *Settings) { s.SacdAddress = "" },
-		"no vehicle NFT address": func(s *Settings) { s.VehicleNftAddress = "" },
-		"no RPC URL":             func(s *Settings) { s.RPCURL = url.URL{} },
-		"no bundler URL":         func(s *Settings) { s.BundlerURL = url.URL{} },
-		"no chain id":            func(s *Settings) { s.ChainID = 0 },
+		"no SACD address":          func(s *Settings) { s.SacdAddress = "" },
+		"no synthetic NFT address": func(s *Settings) { s.SyntheticNftAddress = "" },
+		"no vehicle NFT address":   func(s *Settings) { s.VehicleNftAddress = "" },
+		"no RPC URL":               func(s *Settings) { s.RPCURL = url.URL{} },
+		"no bundler URL":           func(s *Settings) { s.BundlerURL = url.URL{} },
+		"no chain id":              func(s *Settings) { s.ChainID = 0 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := full()
@@ -208,6 +210,7 @@ func TestValidate_RejectsPartialSharingConfiguration(t *testing.T) {
 	full := func() *Settings {
 		s := base()
 		s.SacdAddress = "0x3c152B5d96769661008Ff404224d6530FCAC766d"
+		s.SyntheticNftAddress = "0x4804e8D1661cd1a1e5dDdE1ff458A7f878c0aC6D"
 		s.VehicleNftAddress = "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF"
 		s.RPCURL = mustURL(t, "https://polygon-mainnet.example/v2/key")
 		s.BundlerURL = mustURL(t, "https://rpc.zerodev.example/api/v2/bundler/proj")
@@ -228,11 +231,12 @@ func TestValidate_RejectsPartialSharingConfiguration(t *testing.T) {
 	})
 
 	for name, blank := range map[string]func(*Settings){
-		"SACD_ADDRESS":        func(s *Settings) { s.SacdAddress = "" },
-		"RPC_URL":             func(s *Settings) { s.RPCURL = url.URL{} },
-		"BUNDLER_URL":         func(s *Settings) { s.BundlerURL = url.URL{} },
-		"VEHICLE_NFT_ADDRESS": func(s *Settings) { s.VehicleNftAddress = "" },
-		"CHAIN_ID":            func(s *Settings) { s.ChainID = 0 },
+		"SACD_ADDRESS":          func(s *Settings) { s.SacdAddress = "" },
+		"SYNTHETIC_NFT_ADDRESS": func(s *Settings) { s.SyntheticNftAddress = "" },
+		"RPC_URL":               func(s *Settings) { s.RPCURL = url.URL{} },
+		"BUNDLER_URL":           func(s *Settings) { s.BundlerURL = url.URL{} },
+		"VEHICLE_NFT_ADDRESS":   func(s *Settings) { s.VehicleNftAddress = "" },
+		"CHAIN_ID":              func(s *Settings) { s.ChainID = 0 },
 	} {
 		t.Run("missing "+name+" refuses to boot", func(t *testing.T) {
 			s := full()
