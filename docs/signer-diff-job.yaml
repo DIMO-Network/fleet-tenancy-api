@@ -1,0 +1,54 @@
+# Plan 06 step 1: prove this service's signer keys and kaufmann's are the same
+# keys, by derived address. Read-only on both databases — kaufmann's session is
+# forced read-only, and the subcommand only SELECTs locally.
+#
+# Update image to the current release before applying. Success is exit 0 with
+# `differ=0` and `decrypt_failed=0` in the summary line; the plan gates every
+# later step of 06 on that.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fleet-tenancy-api-signer-diff
+  namespace: prod
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      annotations:
+        # Not meshed, same reasoning as the backfill jobs: Postgres only, no
+        # in-cluster service, and the proxy-outlives-container hang avoided
+        # entirely.
+        linkerd.io/inject: disabled
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: signer-diff
+          image: dimozone/fleet-tenancy-api:0.20.0
+          envFrom:
+            - configMapRef:
+                name: fleet-tenancy-api-config
+            - secretRef:
+                name: fleet-tenancy-api-secret
+          env:
+            - name: K_HOST
+              valueFrom:
+                secretKeyRef: {name: kaufmann-oracle-secret, key: DB_HOST}
+            - name: K_USER
+              valueFrom:
+                secretKeyRef: {name: kaufmann-oracle-secret, key: DB_USER}
+            - name: K_PASS
+              valueFrom:
+                secretKeyRef: {name: kaufmann-oracle-secret, key: DB_PASSWORD}
+            - name: BACKFILL_KAUFMANN_ENC_KEY
+              valueFrom:
+                secretKeyRef: {name: kaufmann-oracle-secret, key: TENANT_SECRET_ENC_KEY}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              export BACKFILL_KAUFMANN_DSN="host=$K_HOST port=5432 dbname=kaufmann_oracle user=$K_USER password=$K_PASS sslmode=require options='-c default_transaction_read_only=on'"
+              /fleet-tenancy-api signer-diff
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
