@@ -220,7 +220,7 @@ validator, and those vehicles become permanently unsignable with no error that
 names the cause: accounts-api simply reports `providedSignerAddress` ≠ our
 signer, and every operation on them returns a clean, wrong 403.
 
-### 2. Make this service able to write and provision a signer, without pretending it can rotate one
+### 2. Make this service able to write and provision a signer, without pretending it can rotate one — DONE 2026-08-21, `v0.22.0`
 
 Today the only writer of `tenant_credentials.signer_key_enc` is a one-shot
 backfill command. Before this service can be the sole holder it must be able to
@@ -243,6 +243,16 @@ Two constraints on the shape:
 Confirm with the accounts-api team whether a `providedSignerAddress` update
 exists server-side. Our clients do not expose one; if the service does, the
 permanence claim softens and the note should say so precisely.
+
+**Done as `provision-signer`** — per-tenant and explicit rather than kaufmann's
+blanket backfill, because here a missing signer is usually a decision
+(self-serve tenants have none, which is what keeps sharing off).
+`kind=customer` requires `-force-customer` for that reason. The conditional is
+in the SQL. `docs/signer-permanence.md` is the shipped note; the accounts repo
+was checked directly 2026-08-21 — `providedSignerAddress` is register-only,
+no server-side update exists, and the kernel accounts remain recoverable in
+principle through the Turnkey co-signer path, with no tooling. Confirming the
+team's roadmap intent remains a human conversation.
 
 **Cost if wrong:** an unconditional write turns a routine re-run of a
 provisioning command into a mass-orphaning event across a tenant's whole fleet,

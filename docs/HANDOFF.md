@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus [`operator-tenancy/`](operator-tenancy/) —
 the full design set, published here 2026-08-12 once the two weaknesses it
 documents were fixed. An identical copy lives in `fleet-lite-app`.
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-20 16:00 UTC*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-21 03:45 UTC*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -3089,3 +3089,82 @@ lasts four minutes.
 One addition: **the port name `mon-http` is load-bearing** under the namespace's
 default-deny inbound policy — rename it and the scrape fails with an
 empty-bodied proxy 403 that looks like the app rejecting the request.
+
+
+## PICK UP HERE — session handoff, 2026-08-21 ~03:45 UTC
+
+Three plans moved tonight; two of them finished. Everything below is released,
+deployed and verified on the workload, and every gate was met with recorded
+evidence rather than waived.
+
+### Plan 01 — DONE. The groups move is over.
+
+P5b shipped end to end: the deferred references landed here as a real FK plus
+tenant-scoped triggers (`v0.21.0`, migration `20260821120000`, applied in prod
+03:07 UTC), and both apps dropped their local tables, mirrors, flags and diff
+crons — fleet-lite `v0.21.0` (migration `20260821130000`, 03:19 UTC, −4,569
+lines) and kaufmann `v1.54.0` (same-named migration, 03:37 UTC). All four
+group cronjobs are gone from the cluster. The gate: groups-diff clean in both
+apps on the day of the drop (fleet-lite `differ=0 missing_remote=0
+unreachable=0` across 7/88 on the FIXED image — the first complete walk since
+the flake fix; kaufmann `differ=0 missing_remote=0` across 4/86), after a
+week's soak. **The revert path is gone on purpose**: the down migrations
+restore shape, not rows, and the authoritative copy is this service's tables,
+now with integrity the mirrors never had. Group deletion strips scope arrays
+to EMPTY, never NULL — NULL means unrestricted, and collapsing would escalate.
+
+### Plan 06 — steps 1 and 2 done; the key is proven single.
+
+`signer-diff` (`v0.20.0`) ran in prod 02:33 UTC: `agree=11 differ=0
+missing_local=0 missing_remote=0 no_signer=8 stored_address_drift=0
+decrypt_failed=0`. Consolidation cannot pick a wrong winner — there is no
+divergence to pick between. `provision-signer` (`v0.22.0`) is create-if-absent
+with the condition IN THE SQL, per-tenant and explicit, `-force-customer`
+required for customers because a self-serve tenant gaining a signer gains
+sharing. `docs/signer-permanence.md` records why there is no rotate:
+accounts-api's `providedSignerAddress` is register-only (checked in the repo,
+not asked of the team), and recovery is the untooled Turnkey co-signer path.
+**Next: step 3**, the typed shared-operations endpoint — an enum, never raw
+calldata. And still: **no vehicle share has ever been sent.**
+
+### Plan 07 — both readers on in prod, neither exercised.
+
+kaufmann's b2b make/model/year cut over behind
+`VEHICLE_METADATA_FROM_TENANCY` (`v1.53.0` + flip 20:20 UTC on the 20th),
+fleet-lite's since 14:17 the same day. Nobody has loaded any fleet page since
+metrics began — no `/v1/authz` series at all, so the absence is universal, not
+TRAST-specific. The first render shows a casing change ("FORD" → "Ford");
+that is the flag working. Step 5 waits on moving kaufmann's `owner` reads,
+which waits on redesigning the console's drift detection — decided 2026-08-20
+as its own step.
+
+### Lessons this session that will otherwise be relearned
+
+- **The roster's vin/plate columns have no writer** — reserved for kaufmann,
+  served by the endpoint, NULL on all rows. Found by building the second
+  consumer; the same gap as step 3's device ids, in new columns. The merge
+  falls back per FIELD, so nothing blanked.
+- **A tag ships everything merged since the last tag.** kaufmann `v1.53.0`
+  carried the `access_fleet_groups` drop that had sat unreleased on main for
+  a day. It was prepared, verified work — but check `git log <last-tag>..HEAD`
+  before tagging, every time.
+- **The handoff's own detection command was broken** — the label selector
+  matched CronJob pods whose containers have other names, so kubectl aborted
+  and returned zero lines, render or no render. Fixed above with a per-pod
+  loop; the durable answer is the Prometheus series, which survives restarts.
+- **Fixture debt surfaces as trigger failures.** Three test fixtures seeded
+  scopes for groups they never created; the new integrity rules refused them.
+  That is the rules working — fix the fixture, never loosen the trigger.
+- **strings.ToTitle upper-cases every rune.** Kaufmann's consoles have been
+  rendering "FORD" since the beginning; the parse is now one pinned function
+  so the fix can be its own visible change.
+
+### Traps — the standing list still applies
+
+Merging deploys chart changes immediately but code only on a `v*` tag; verify
+the image on the workload, not ArgoCD's status; the version-bump workflow
+strips comments from values files (rationale goes in templates/); Helm's
+`default` treats `0` as empty; the prod DB tunnel cert lasts four minutes;
+`mon-http` as a port name is load-bearing. New tonight: kaufmann's values
+parity gate requires values.yaml and values-prod.yaml byte-identical outside
+`image.tag`, so a prod-only flag flip must go in both files.

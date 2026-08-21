@@ -1,7 +1,15 @@
 # Fleet groups move into fleet-tenancy-api
 
-Status: **P1–P4 shipped and live; P5a landed; P5b outstanding.** Written
-2026-08-12. Both apps read groups from this service behind `GROUPS_FROM_TENANCY`
+Status: **DONE — every phase shipped and live; P5b completed 2026-08-21.**
+Written 2026-08-12. The local tables are dropped in both apps (fleet-lite
+`v0.21.0`, kaufmann `v1.54.0`), the mirrors, diff crons and
+`GROUPS_FROM_TENANCY` flags are deleted, and the deferred references landed as
+a real FK plus triggers (`v0.21.0` here). The gate was met, not waived:
+groups-diff clean on 2026-08-21 in both apps — fleet-lite `differ=0
+missing_remote=0 unreachable=0` across 7 tenants/88 groups, kaufmann
+`differ=0 missing_remote=0` across 4/86 — after a week's soak with no revert.
+Per this directory's rule, this plan is now deletable; it stays only until the
+handoff records what its deletion would orphan. Both apps read groups from this service behind `GROUPS_FROM_TENANCY`
 (`true` in prod since 2026-08-13), both write here, and their import/reconcile
 machinery is deleted — this service is the single publisher of
 `dimo.document.vehicle.groups`. P5a moved the last scope readers off the local
