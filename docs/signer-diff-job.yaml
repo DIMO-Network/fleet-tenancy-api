@@ -24,7 +24,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: signer-diff
-          image: dimozone/fleet-tenancy-api:0.20.0
+          image: dimozone/fleet-tenancy-api:33e9e11
           envFrom:
             - configMapRef:
                 name: fleet-tenancy-api-config

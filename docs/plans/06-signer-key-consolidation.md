@@ -188,7 +188,7 @@ with the same meaning.
 
 ## Steps
 
-### 1. Prove the two copies are the same key
+### 1. Prove the two copies are the same key — DONE 2026-08-21, differ=0
 
 A `signer-diff` subcommand in this service, shaped like fleet-lite's
 `tenancy-diff` and `groups-diff`. For every tenant present in both databases:
@@ -199,6 +199,18 @@ and cross-check each derived address against the stored `signer_address` in both
 rows.
 
 Nothing else starts until this reports `differ=0` and no unexplained missing.
+
+**Run in production, 2026-08-21 02:33 UTC** (`signer-diff`, released `v0.20.0`
+as image `33e9e11`, via `docs/signer-diff-job.yaml`):
+`agree=11 differ=0 missing_local=0 missing_remote=0 no_signer=8
+stored_address_drift=0 decrypt_failed=0`. Every signer exists on both sides and
+derives one address; the eight no-signer tenants are self-serve, which is the
+designed state. The gate is met and step 2 may start.
+
+One hazard found while building it, real but untripped: `sharing.go` parses the
+decrypted key without trimming a `0x` prefix, where `credentials.go` trims it —
+a prefixed key would sign attestations fine and fail its first share. No stored
+key is prefixed today; the diff warns if one ever appears.
 
 **Cost if wrong:** everything downstream assumes one logical key with two
 wrappers. If a tenant's copies have drifted — a signer regenerated on one side,
