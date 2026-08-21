@@ -88,6 +88,14 @@ func seed(t *testing.T, store *db.Store) {
 		opTenant, opWallet)
 	require.NoError(t, err)
 
+	// The group the customer member is scoped to. Groups lived in the apps
+	// when this fixture was written; since the P5b integrity rules a scope may
+	// only name a group this database holds, which is the point of them.
+	_, err = w.Exec(`INSERT INTO fleet_groups (id,tenant_id,name,color)
+		VALUES ($1,$2,'Vans','#112233') ON CONFLICT (id) DO NOTHING`,
+		custTenant+"_vans", custTenant)
+	require.NoError(t, err)
+
 	// Customer member, restricted to one group.
 	_, err = w.Exec(`INSERT INTO memberships (tenant_id,wallet,role,permissions,scope_group_ids)
 		VALUES ($1,$2,'member','[]'::jsonb, ARRAY['`+custTenant+`_vans'])`,
