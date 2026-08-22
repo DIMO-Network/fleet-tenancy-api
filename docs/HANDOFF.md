@@ -3330,8 +3330,9 @@ introduced by the fix for the previous one.
    zero-copy view over fasthttp's reused request buffer; Prometheus retains
    label strings, so the stored label mutated into `method="GETT"`, collided,
    and every scrape failed. Fixed in `v0.24.0`. **Never store a fiber
-   accessor's string anywhere that outlives the request** — the sibling
-   middleware in fleet-lite and kaufmann has not been audited for this.
+   accessor's string anywhere that outlives the request.** *(The siblings are
+   now audited — see the end of this file. fleet-lite had the same bug and it
+   reached prod; kaufmann is clean.)*
 2. **`shareable-owners` took 45 seconds** for an operator tenant: one
    sequential accounts-api call per distinct owner, with the tenant credential
    resolved *inside* each check. `v0.25.0` moved the answers into
@@ -3498,6 +3499,38 @@ an in-cluster service is the mesh, not the credential." This one is: **a 401
 naming a missing API key can be a present-but-mangled key**, not an absent one.
 Both are cases where the error names the wrong layer.
 
+### The metrics-registry bug had spread — audit now closed
+
+The note above said the sibling middleware in fleet-lite and kaufmann had not
+been audited. It has been now, prompted by a `TargetDown` alert:
+
+> `100% of the fleet-lite-app/fleet-lite-app targets in prod namespace are down.`
+
+**fleet-lite had the identical bug and it was live in prod.** Its
+`api/internal/app/metrics.go` was cloned from this service's middleware *before*
+`8c4ac87` landed, and its own header comment still called the two "identical".
+`/metrics` answered 500 on every scrape from the `v0.25.0` rollout (16:54 UTC)
+onward — 14 registry collisions, the first on `method="GETT"`, same signature.
+Fixed in `fleet-lite-app#146`.
+
+**kaufmann is clean.** It uses only `shared/pkg/middleware/metrics`, which
+labels from `c.Route().Method` / `c.Route().Name` — boot-time route-registration
+strings, not buffer views. Its only hand-rolled Prometheus labels are flespi
+frame counters built from constants, and its `c.Method()` uses are a zerolog
+`.Str()` and an `http.NewRequest`, both of which copy synchronously.
+
+Two things worth carrying:
+
+- **The app was entirely healthy.** 2/2 pods, zero restarts, `fleets.dimo.co`
+  answering 200 in 0.28s, `mon-http` intact, ServiceMonitor selector matching,
+  both pod IPs ready. `TargetDown` here meant *blind*, not *down* — and the app
+  logs nothing, because promhttp serves the 500 itself.
+- **A rollout restart clears this alert without fixing it.** It resets the
+  in-memory registry, so the target goes green and re-poisons on the next burst
+  of concurrent traffic. That is roughly 8 minutes, judging by the gap between
+  the rollout and the corrupted series' creation timestamps. Anyone who
+  "fixes" TargetDown by restarting will believe they succeeded.
+
 ### Everything else, unchanged from the previous section
 
 The state table, the bug chain behind the tooltip, `warm-shared-accounts` after
@@ -3515,9 +3548,12 @@ waits and drag `receiptPollingRetries` down with it. **Widening kaufmann is the
 cheaper and safer side.** Note step 4's own text in the plan (lines 333–336) is
 stale — it claims a 10-minute job timeout that #77 changed to 15 for transfers.
 
-**One version check, so it is not re-investigated.** `fleet-lite-app`'s
-`values-prod.yaml:5` reads `tag: e4cfc23` (v0.24.0), which looks like prod is a
-release behind. It is not: the workload runs `6f78118` = **v0.25.0**. The
-checked-out values file is stale relative to what is deployed — the standing
-"verify the image on the workload" trap firing in the opposite direction to
-usual.
+**One version check, so it is not re-investigated.** `fleet-lite-app` prod runs
+`6f78118` = **v0.25.0**, and `charts/fleet-lite-app/values-prod.yaml:5` on
+`origin/main` agrees. A local checkout reading `e4cfc23` there is simply behind
+by the two automated "Update Image Version" commits — `git fetch` before
+concluding anything from a values file. (Recorded because this session briefly
+mistook a stale working tree for a real chart/workload disagreement. The
+standing trap says verify the image on the workload rather than ArgoCD; the
+corollary is that the *chart in your editor* is not the chart that deployed
+either.)
