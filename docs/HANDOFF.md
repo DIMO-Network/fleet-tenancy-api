@@ -3159,6 +3159,40 @@ as its own step.
   rendering "FORD" since the beginning; the parse is now one pinned function
   so the fix can be its own visible change.
 
+### Two prod findings, 2026-08-22 — both from one hover tooltip
+
+A user asked why fleet-lite's share icon said "Sharing status couldn't be
+checked". It did, and chasing it surfaced two things.
+
+**`/metrics` had been answering 500 since 2026-08-21 ~15:35 UTC** — the whole
+service invisible to Grafana on the first day it carried real traffic. fiber's
+`c.Method()` is a zero-copy view over fasthttp's request buffer, which is
+reused for a later request; Prometheus retains label strings, so the stored
+label mutated into `method="GETT"`, collided with the real series, and every
+scrape failed. Fixed in `v0.24.0` by copying the label. **The lesson generalises
+beyond this repo: never store a fiber accessor's string anywhere that outlives
+the request** — check any sibling middleware in the other two repos before
+trusting their dashboards.
+
+**`shareable-owners` took 45 seconds** for the Kaufmann operator tenant, against
+a caller that gives up at 5. The gate asked accounts-api once per distinct
+owner, sequentially, resolving the tenant credential inside each check — built
+for the one-kernel-account customer tenant, not an operator with hundreds of
+distinct owners. Worse, the caller's timeout cancelled the context, so nothing
+was learned and every render started over.
+
+`v0.25.0` stores the answers in `shared_accounts`. Safe because
+`providedSignerAddress` cannot be revoked, so a positive is permanent; a
+negative ages out in a day because an account can be *created* later. Cold
+lookups now run 8-wide under a 3-second budget and return an `unresolved` list
+rather than reporting unchecked owners as refused — a large fleet warms over a
+few renders instead of failing forever on one. fleet-lite `v0.23.0` renders
+those as unknown.
+
+**Still unmeasured:** nobody has loaded a fleet page since the rollout, so the
+latency improvement is structural rather than observed. The first render proves
+it — and the Prometheus series now exists to show it.
+
 ### Traps — the standing list still applies
 
 Merging deploys chart changes immediately but code only on a `v*` tag; verify
