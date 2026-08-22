@@ -30,15 +30,19 @@ spec:
   template:
     metadata:
       annotations:
-        # Not meshed, same reasoning as the other one-off jobs: Postgres and one
-        # outbound HTTPS call, no in-cluster service, and the
-        # proxy-outlives-container hang avoided entirely.
-        linkerd.io/inject: disabled
+        linkerd.io/inject: enabled
+        # MESHED, unlike the signer-diff and backfill jobs this manifest was
+        # modelled on. Those talk only to Postgres; this one mints a developer
+        # JWT, which calls identity-api in-cluster. The namespace's default-deny
+        # inbound policy refuses unmeshed callers with an EMPTY-BODIED 403 that
+        # reads like identity-api rejecting the credential rather than the proxy
+        # rejecting the connection — verified in prod 2026-08-22, where the
+        # unmeshed first run failed with exactly that after resolving nothing.
     spec:
       restartPolicy: Never
       containers:
         - name: warm-shared-accounts
-          image: dimozone/fleet-tenancy-api:REPLACE_ME
+          image: dimozone/fleet-tenancy-api:3705267
           envFrom:
             - configMapRef:
                 name: fleet-tenancy-api-config
@@ -51,11 +55,19 @@ spec:
           # The tenant is Kaufmann. Change it for another tenant; the owner set
           # is the same either way, only the credential the lookups
           # authenticate with differs.
+          # Being meshed costs the proxy-outlives-container hang: the sidecar
+          # keeps running after the binary exits and the Job never completes.
+          # The same shutdown POST the publish-group-attestations cronjob uses,
+          # with the exit code preserved across it so a real failure still
+          # fails the Job.
           command:
-            - /fleet-tenancy-api
-            - warm-shared-accounts
-            - -tenant
-            - 7be1ab9e-9286-4a8f-b45f-15f25ee4da77
+            - /bin/sh
+            - -c
+            - |
+              /fleet-tenancy-api warm-shared-accounts -tenant 7be1ab9e-9286-4a8f-b45f-15f25ee4da77
+              code=$?
+              wget -q -O- --post-data='' http://localhost:4191/shutdown >/dev/null 2>&1 || true
+              exit $code
           resources:
             requests: {cpu: 50m, memory: 128Mi}
             limits: {cpu: 500m, memory: 512Mi}
