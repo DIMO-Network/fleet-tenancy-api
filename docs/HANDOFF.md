@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus [`operator-tenancy/`](operator-tenancy/) —
 the full design set, published here 2026-08-12 once the two weaknesses it
 documents were fixed. An identical copy lives in `fleet-lite-app`.
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-22 18:40 UTC*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-22 21:05 UTC*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -3381,7 +3381,7 @@ app** — check `linkerd.io/inject` before debugging credentials. And **a tag
 ships everything merged since the last tag**, so read `git log <last-tag>..HEAD`
 before cutting one.
 
-## PICK UP HERE — session handoff, 2026-08-22 ~18:40 UTC
+## Session handoff, 2026-08-22 ~18:40 UTC (superseded — see the end)
 
 **The share was attempted, and it failed on the one hop nothing had ever
 exercised: the RPC URL. That is now fixed and verified. The share still needs
@@ -3569,3 +3569,98 @@ mistook a stale working tree for a real chart/workload disagreement. The
 standing trap says verify the image on the workload rather than ArgoCD; the
 corollary is that the *chart in your editor* is not the chart that deployed
 either.)
+
+## PICK UP HERE — session handoff, 2026-08-22 ~21:05 UTC
+
+**THE FIRST PRODUCTION VEHICLE SHARE LANDED ON CHAIN.** 2026-08-22 20:58:44
+UTC. The path that shipped in `v0.14.0` on 2026-08-19 and had never once
+executed has now executed, end to end, successfully.
+
+```
+{"level":"info","component":"share-worker","job_id":2,
+ "tenant_id":"7be1ab9e-9286-4a8f-b45f-15f25ee4da77","token_id":187963,
+ "grantee":"0x6272d24fa6aba09483Bd95E382E6E6272198900d",
+ "owner":"0xD68cE5748BB7384B2b35d0c457c2Fe303f32B781",
+ "expiration":"1818968319",
+ "tx_hash":"0x424237027ca56c6667aa553a6677cbdfc2eff34371ea2bd8d63ef0f6c50f1421",
+ "message":"vehicle share granted on chain"}
+```
+
+### Verified three ways, not just from the log line
+
+| Check | Result |
+|---|---|
+| Transaction receipt (Polygon) | `status=0x1` **success**, block `92484864`, gas `374049`, 6 logs, `to` = `0x0000000071727de22e5e9d8baf0edac6f37da032` — ERC-4337 **EntryPoint v0.7**, correct for a UserOperation |
+| identity-api SACDs for token 187963 | grantee `0x6272d24f…900d`, `permissions: 0xfffc`, `expiresAt 2027-08-22T20:58:39Z`, `createdAt 2026-08-22T20:58:43Z` |
+| Permission mask | `0xfffc` is exactly `DefaultPermissions()` — everything except `APPROXIMATE_LOCATION`, as `internal/sharing/permissions.go:46-72` documents |
+
+**The mask difference is by design, not drift.** The two pre-existing grants on
+that vehicle (Kaufmann's license `0xCa977Abb…` and `0x299671D2…`) carry
+`0x3fffc` = `FullPermissions()`, which adds `APPROXIMATE_LOCATION`. Customer
+shares deliberately use the narrower default; the extra bit is the coarse
+alternative to precise location and is redundant next to `CURRENT_LOCATION` and
+`ALLTIME_LOCATION`, both of which the share does grant. Note the default
+**includes `COMMANDS`** — a share hands the grantee lock/unlock. That was
+decided 2026-08-18 and is the one default that grants physical control.
+
+Expiry landed at one year, the modal's default of the three options
+(30 days / 1 year / no expiry).
+
+### What this closes, and what it opens
+
+Closed: everything the last three handoff sections were about. The signer key,
+the authorization chain, the entitlement gate, the live owner lookup, the
+credential resolution, the bundler, the paymaster and the receipt wait have all
+now run for real, once, successfully.
+
+Open, and now worth attention for the first time:
+
+1. **Nothing has revoked a share.** There is no revoke route — `DELETE
+   /v1/tenants/{id}/vehicles/{tokenId}` is entitlement revocation, not SACD.
+   A share is a year long and cannot currently be withdrawn through this
+   service. That is a gap, not a decision, and it is now load-bearing because
+   a real grant exists.
+2. **`MaxAttempts: 1` means a failed share is final.** Job 1 (the RPC failure)
+   stayed discarded; job 2 was a fresh submit. Nothing retries, by design.
+3. The second share is unexercised — one success is not a pattern, and the
+   interesting failure (`returned no receipt; may still land on chain`) has
+   still never been seen.
+
+### Also this session: fleet-lite `v0.25.1`
+
+The `TargetDown` alert on fleet-lite was the metrics-registry bug, spread by a
+cloned middleware. Fixed, released and verified — see the superseded section
+above for the full account, including why a restart appears to fix it and does
+not, and why load through `fleets.dimo.co` is not a valid test.
+
+### Next actions
+
+1. **Decide whether shares need a revoke path.** See the gap above. A year is
+   a long time to be unable to take something back.
+2. **Run `warm-shared-accounts` after onboarding any fleet** — unchanged.
+3. **Plan 06 step 4** — unchanged, and the timeout decision is still the
+   blocker. Widening kaufmann's transfer worker
+   (`internal/onboarding/transfer_shared.go:98`) is the cheaper side; the
+   detail is in the superseded section.
+4. **94 untranslated strings** in fleet-lite (`web/xliff/es.xlf`) serving
+   English to a Chilean fleet.
+
+### Traps — the standing list
+
+Merging deploys chart changes immediately but code only on a `v*` tag; verify
+the image on the workload, not ArgoCD's status *and not the chart in your
+editor* (`git fetch` first); the version-bump workflow strips comments from
+values files; Helm's `default` treats `0` as empty; the prod DB tunnel cert
+lasts four minutes; `mon-http` as a port name is load-bearing; kaufmann's
+values parity gate requires both values files byte-identical outside
+`image.tag`; an empty-bodied 403 from an in-cluster service is the mesh, not
+the app; a tag ships everything merged since the last one, so read
+`git log <last-tag>..HEAD` before cutting one.
+
+From this session: **a synced ExternalSecret proves the value arrived, not that
+it is correct** — check the bytes, and compare the length against a sibling
+that works; **write URL-shaped secrets from a file, never as a shell argument**;
+**`envFrom.secretRef` needs a rollout restart**, `checksum/config` does not
+cover it; **a 401 naming a missing API key can be a mangled key, not an absent
+one**; and **generate load in-cluster, not through Cloudflare**, which absorbed
+all but 16 of 240 requests.
