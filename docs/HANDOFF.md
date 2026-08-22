@@ -3193,6 +3193,51 @@ those as unknown.
 latency improvement is structural rather than observed. The first render proves
 it — and the Prometheus series now exists to show it.
 
+### The store was never warming — the answers were being thrown away
+
+Follow-up to the above, same day. `v0.25.0` stored the answers; it just never
+managed to write any of the ones that mattered.
+
+`resolveMany` drained its results **after** `wg.Wait()` and called
+`store.Record` with the same context the 3-second budget was attached to. On
+any call that exhausted the budget — which is every cold render of a large
+fleet, the only case the store exists for — the context was already cancelled
+by the time the write loop ran, so every write failed with
+`context deadline exceeded` and the batch's work was discarded. The comment
+directly below the loop claimed "what was resolved is recorded and returned",
+which is what the code was supposed to do and never did. Kaufmann's 162 owners
+resolved 9 on one render and 22 on the next half an hour later: the same cold
+lookups, redone and rediscarded. Owner `0xD68cE574…` (token 187963) sat
+permanently on fleet-lite's "Sharing status couldn't be checked" while
+kaufmann-oracle's transfer modal showed the same vehicle as an authorised
+shared account — accounts-api had the answer all along, and this service kept
+asking for it and dropping it.
+
+Fixed by recording each answer **as it arrives**, in the worker that obtained
+it, through a `context.WithoutCancel` copy of the caller's context with its own
+short deadline. Detaching is the fix; recording in-flight rather than at the
+end is what makes partial progress durable when the deadline lands mid-batch.
+It stays safe only because recording is synchronous within the call — the
+context descends from fiber's recycled `*fasthttp.RequestCtx`, so a detached
+copy must never outlive the handler. **The general lesson is the sibling of the
+`/metrics` one above:** a context you are using to BOUND work is the wrong
+context to PERSIST that work's results with.
+
+**Convergence is a separate problem and the fix is not a bigger budget.**
+Accounts-api answers a wallet in ~1–2.5s, so a render reaches roughly
+`(budget / latency) × concurrency` owners however those are tuned — 8-wide over
+3s is exactly the 9 and 22 observed. Reaching 162 in one render needs either a
+budget past the caller's five-second patience or ~50 simultaneous requests at
+accounts-api per page load per replica. Both trade a real limit for a worse one,
+so both knobs are unchanged. Instead there is a `warm-shared-accounts`
+subcommand (`docs/warm-shared-accounts-job.yaml`) that resolves the whole owner
+set out of band with no budget. **Run it for a tenant after onboarding or
+reconciling a fleet**; the request path then only ever meets the handful of
+owners that appeared since, which is what its 3-second budget was always sized
+for. It is safe to re-run — a positive is never re-asked, a negative only after
+it ages out — and `-dry-run` reports how many owners are cold without spending
+anything.
+
 ### Traps — the standing list still applies
 
 Merging deploys chart changes immediately but code only on a `v*` tag; verify

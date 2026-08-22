@@ -1,0 +1,61 @@
+# Resolve every known vehicle owner's shared account ahead of a page render, so
+# a large fleet's share buttons all appear on the FIRST load instead of
+# converging a couple of dozen owners at a time over a dozen renders.
+#
+# Run it after onboarding or reconciling a fleet, and whenever
+# "shared-account lookups ran out of budget" keeps appearing for a tenant with
+# the counts barely moving between calls.
+#
+# Update image to the current release before applying. Success is exit 0 with
+# failed=0 in the summary line. Safe to re-run: a positive is never re-asked
+# (providedSignerAddress cannot be revoked — docs/signer-permanence.md) and a
+# negative only after it ages out, so a second run against a warm fleet makes
+# no accounts-api calls at all.
+#
+# -tenant is the tenant whose developer JWT authenticates the lookups. It does
+# NOT scope the owner set: a by-wallet lookup is not caller-scoped, and scoping
+# by entitlement would warm nothing for operator tenants, which have no
+# vehicle_entitlements rows by design. See the subcommand's Usage().
+#
+# Writes to shared_accounts only, one upsert per owner. It cannot erase a known
+# signer — the negative-never-overwrites-a-positive guard is in the SQL.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fleet-tenancy-api-warm-shared-accounts
+  namespace: prod
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      annotations:
+        # Not meshed, same reasoning as the other one-off jobs: Postgres and one
+        # outbound HTTPS call, no in-cluster service, and the
+        # proxy-outlives-container hang avoided entirely.
+        linkerd.io/inject: disabled
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: warm-shared-accounts
+          image: dimozone/fleet-tenancy-api:REPLACE_ME
+          envFrom:
+            - configMapRef:
+                name: fleet-tenancy-api-config
+            - secretRef:
+                name: fleet-tenancy-api-secret
+          # `command`, not `args`: the image sets CMD and no ENTRYPOINT, so a
+          # bare `args` would replace the binary rather than pass it a
+          # subcommand and the container would fail to exec.
+          #
+          # The tenant is Kaufmann. Change it for another tenant; the owner set
+          # is the same either way, only the credential the lookups
+          # authenticate with differs.
+          command:
+            - /fleet-tenancy-api
+            - warm-shared-accounts
+            - -tenant
+            - 7be1ab9e-9286-4a8f-b45f-15f25ee4da77
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}

@@ -44,6 +44,10 @@ type SharedSignerService struct {
 	// fleet render took, so a 600-vehicle operator paid hundreds of sequential
 	// accounts-api calls on every page load and timed out its caller.
 	store *SharedAccountStore
+	// coldBudget is coldLookupBudget, held on the instance so a test can run a
+	// batch out of budget in a few hundred milliseconds instead of three
+	// seconds. Nothing in production sets it.
+	coldBudget time.Duration
 }
 
 // signerLookupConcurrency bounds the fan-out when owners are genuinely unknown.
@@ -62,15 +66,39 @@ const signerLookupConcurrency = 8
 // every render is discarded. Bounding the work means each call resolves a
 // chunk, records it, and returns; a large fleet converges over a few renders
 // instead of failing forever.
+//
+// Deliberately still three seconds. The caller gives up at five and the budget
+// is not the whole response — the credential resolve, the store lookup and
+// serialization sit outside it — so buying a fourth second of lookups spends
+// most of the remaining margin against the exact failure this bound exists to
+// prevent. The per-owner accounts-api latency (~1-2.5s) is what limits how many
+// owners a render can reach, and no setting of this constant fixes that; a
+// cold fleet is warmed out of band instead, with `warm-shared-accounts`.
 const coldLookupBudget = 3 * time.Second
+
+// recordTimeout bounds ONE durable write of a learned answer.
+//
+// The writes run on a context detached from the caller's (see record), so they
+// need a deadline of their own — without one, a wedged database would pin a
+// lookup worker with no caller left to time it out.
+const recordTimeout = 5 * time.Second
+
+// warmLookupConcurrency is the fan-out for the out-of-band warm path, which has
+// no caller waiting on it and runs one instance at a time. Wider than
+// signerLookupConcurrency for that reason and no other: the request-path bound
+// is about how much simultaneous load ONE page render is allowed to put on
+// accounts-api, multiplied by every render in flight across every replica. A
+// single job answers to neither.
+const warmLookupConcurrency = 16
 
 func NewSharedSignerService(logger *zerolog.Logger, accounts gateway.AccountsAPI,
 	creds credentialProvider, store *SharedAccountStore) *SharedSignerService {
 	return &SharedSignerService{
-		logger:   logger.With().Str("component", "shared-signer").Logger(),
-		accounts: accounts,
-		creds:    creds,
-		store:    store,
+		logger:     logger.With().Str("component", "shared-signer").Logger(),
+		accounts:   accounts,
+		creds:      creds,
+		store:      store,
+		coldBudget: coldLookupBudget,
 	}
 }
 
@@ -150,9 +178,9 @@ func (s *SharedSignerService) FilterSignable(ctx context.Context, tenantID strin
 
 	var unresolved []string
 	if len(unknown) > 0 {
-		budget, cancel := context.WithTimeout(ctx, coldLookupBudget)
+		budget, cancel := context.WithTimeout(ctx, s.coldBudget)
 		defer cancel()
-		resolved, rerr := s.resolveMany(budget, tenantID, unknown)
+		resolved, rerr := s.resolveMany(budget, tenantID, unknown, signerLookupConcurrency)
 		if rerr != nil && !errors.Is(rerr, context.DeadlineExceeded) {
 			// A real upstream failure is still all-or-nothing. A degraded
 			// answer would hide share buttons during an accounts-api blip and
@@ -170,7 +198,8 @@ func (s *SharedSignerService) FilterSignable(ctx context.Context, tenantID strin
 		if len(unresolved) > 0 {
 			s.logger.Info().Str("tenant_id", tenantID).
 				Int("resolved", len(resolved)).Int("unresolved", len(unresolved)).
-				Msg("shared-account lookups ran out of budget; the next call resolves more")
+				Msg("shared-account lookups ran out of budget; the resolved ones are recorded and the next call resolves more. " +
+					"If this repeats with the counts barely moving, warm the fleet out of band: warm-shared-accounts -tenant <uuid>")
 		}
 	}
 
@@ -184,17 +213,31 @@ func (s *SharedSignerService) FilterSignable(ctx context.Context, tenantID strin
 }
 
 // resolveMany asks accounts-api about the owners nothing is known about, up to
-// signerLookupConcurrency at a time, and records every answer so the next
-// render does not ask again.
+// concurrency at a time, and records every answer so the next render does not
+// ask again.
 //
 // The developer JWT is minted ONCE for the whole batch rather than per owner.
 // It was per owner before, which meant a cold render's cost was multiplied by
 // the credential path as well as the accounts-api call.
-func (s *SharedSignerService) resolveMany(ctx context.Context, tenantID string, owners []string) (map[string]string, error) {
+//
+// EACH ANSWER IS RECORDED THE MOMENT IT ARRIVES, in the worker that obtained
+// it, rather than in a drain loop after wg.Wait(). Persisting after the fact
+// was correct only for calls that finished inside their budget — which are
+// exactly the calls where none of this matters. The batches worth remembering
+// are the ones the deadline lands in the middle of, and for those the drain ran
+// after the budget had already expired. Recording as we go also means the
+// answers are durable before the process has any chance to lose them, and it
+// costs nothing: one upsert per owner either way, moved off the tail and spread
+// across workers that spend ~99% of their time waiting on accounts-api.
+func (s *SharedSignerService) resolveMany(ctx context.Context, tenantID string, owners []string, concurrency int) (map[string]string, error) {
 	minted, err := s.creds.DeveloperJWT(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("mint developer JWT for %s: %w", tenantID, err)
 	}
+
+	// Derived once, here, so every write in this batch shares the caller's
+	// values and none of its cancellation. See record.
+	keep := context.WithoutCancel(ctx)
 
 	type result struct {
 		owner  string
@@ -204,7 +247,7 @@ func (s *SharedSignerService) resolveMany(ctx context.Context, tenantID string, 
 	jobs := make(chan string)
 	results := make(chan result, len(owners))
 
-	workers := signerLookupConcurrency
+	workers := concurrency
 	if len(owners) < workers {
 		workers = len(owners)
 	}
@@ -215,6 +258,9 @@ func (s *SharedSignerService) resolveMany(ctx context.Context, tenantID string, 
 			defer wg.Done()
 			for owner := range jobs {
 				sa, lerr := s.lookupSigner(ctx, owner, minted.Token)
+				if lerr == nil {
+					s.record(keep, owner, sa)
+				}
 				results <- result{owner: owner, signer: sa, err: lerr}
 			}
 		}()
@@ -242,21 +288,149 @@ func (s *SharedSignerService) resolveMany(ctx context.Context, tenantID string, 
 			continue
 		}
 		out[r.owner] = r.signer
-		// Recorded even when empty: "asked, has none" is worth remembering for
-		// a day, and it is the answer for most wallets.
-		if rerr := s.store.Record(ctx, r.owner, r.signer); rerr != nil {
-			// Not fatal. The answer is correct; only the remembering failed,
-			// and the cost is asking again next time.
-			s.logger.Warn().Err(rerr).Str("owner", r.owner).Msg("could not record shared-account lookup")
-		}
 	}
-	// A blown budget is not a failure: what was resolved is recorded and
-	// returned, and the caller reports the rest as unresolved.
+	// A blown budget is not a failure: what was resolved has been recorded and
+	// is returned, and the caller reports the rest as unresolved.
 	if firstErr != nil && !errors.Is(firstErr, context.DeadlineExceeded) &&
 		!errors.Is(firstErr, context.Canceled) {
 		return nil, firstErr
 	}
 	return out, nil
+}
+
+// record persists one learned answer on a context detached from the caller's.
+//
+// THE DETACHMENT IS THE POINT. The lookups run under coldLookupBudget, and the
+// answers most worth keeping are the ones obtained just before it expires —
+// so writing them through that same context meant that on every call which
+// exhausted its budget, every write failed with "context deadline exceeded"
+// and the service learned nothing from work it had already paid accounts-api
+// for. In prod the Kaufmann tenant's 162 owners resolved 9 on one render and 22
+// on the next half an hour later: the same cold lookups, redone and
+// rediscarded, with the store never warming and the share button never
+// appearing for owners whose authorisation accounts-api was returning happily.
+//
+// context.WithoutCancel rather than context.Background so the request's logging
+// and tracing values survive into the write; the deadline is fresh because the
+// write is not part of what the budget is bounding. Note that this only stays
+// safe while recording is SYNCHRONOUS within the call: ctx here descends from
+// fiber's *fasthttp.RequestCtx, which is recycled once the handler returns, so
+// a detached copy must never outlive it. It doesn't — resolveMany's workers are
+// all joined before FilterSignable returns.
+//
+// A failed write is not fatal. The answer is correct; only the remembering
+// failed, and the cost is asking again next time.
+func (s *SharedSignerService) record(parent context.Context, owner, signer string) {
+	// Recorded even when the signer is empty: "asked, has none" is worth
+	// remembering for a day, and it is the answer for most wallets.
+	ctx, cancel := context.WithTimeout(parent, recordTimeout)
+	defer cancel()
+	if err := s.store.Record(ctx, owner, signer); err != nil {
+		s.logger.Warn().Err(err).Str("owner", owner).Msg("could not record shared-account lookup")
+	}
+}
+
+// ColdOwners returns the checksummed, deduplicated subset of owners that has no
+// usable answer on record and would have to be asked about.
+//
+// It applies exactly the freshness rule the request path applies — a positive
+// is permanent, a negative is re-asked after negativeRecheckAfter — because the
+// rule belongs in one place. A warm run is not a reason to re-ask accounts-api
+// about a signer that cannot have changed, and a second copy of that rule in a
+// SQL predicate somewhere would be free to drift from this one.
+//
+// Exported so a dry run can report what a real run would cost without spending
+// it.
+func (s *SharedSignerService) ColdOwners(ctx context.Context, owners []string) ([]string, error) {
+	seen := map[string]bool{}
+	distinct := make([]string, 0, len(owners))
+	for _, owner := range owners {
+		if !common.IsHexAddress(owner) {
+			continue
+		}
+		key := common.HexToAddress(owner).Hex()
+		if !seen[key] {
+			seen[key] = true
+			distinct = append(distinct, key)
+		}
+	}
+	if len(distinct) == 0 {
+		return nil, nil
+	}
+
+	known, err := s.store.Lookup(ctx, distinct)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	cold := make([]string, 0, len(distinct))
+	for _, owner := range distinct {
+		if rec, ok := known[owner]; ok && rec.Fresh(now) {
+			continue
+		}
+		cold = append(cold, owner)
+	}
+	return cold, nil
+}
+
+// WarmResult is what one warm run learned. Cold is what it actually had to
+// ask about; Requested minus Cold is what was already known.
+type WarmResult struct {
+	Requested int
+	Cold      int
+	Positive  int
+	Negative  int
+	Failed    int
+}
+
+// Warm resolves owners and records the answers OUTSIDE a request, with no
+// budget but the caller's own context.
+//
+// This is the answer to convergence, and the reason it is not "raise
+// coldLookupBudget" or "raise signerLookupConcurrency". Accounts-api answers a
+// wallet in roughly one to two and a half seconds, so a render is limited to
+// about (budget / latency) x concurrency owners no matter how those two are
+// tuned — 8-wide over 3 seconds is the 9 and 22 seen in prod. Reaching 162
+// owners in one render needs either a budget past the caller's five-second
+// patience or a fan-out that puts fifty-odd simultaneous requests on
+// accounts-api per page load, per replica. Both trade a real limit for a worse
+// one. A fleet is a fixed set of owners that changes slowly; resolving it is a
+// batch job that happens to have been living inside a page render.
+//
+// So: run this once for a tenant and its whole fleet is warm, permanently for
+// every positive (docs/signer-permanence.md). The request path then only ever
+// meets the handful of owners that appeared since — a vehicle transferred, a
+// fleet extended — which is what its 3-second budget was always sized for.
+func (s *SharedSignerService) Warm(ctx context.Context, tenantID string, owners []string, concurrency int) (WarmResult, error) {
+	res := WarmResult{Requested: len(owners)}
+	if concurrency <= 0 {
+		concurrency = warmLookupConcurrency
+	}
+
+	cold, err := s.ColdOwners(ctx, owners)
+	if err != nil {
+		return res, err
+	}
+	res.Cold = len(cold)
+	if len(cold) == 0 {
+		return res, nil
+	}
+
+	resolved, err := s.resolveMany(ctx, tenantID, cold, concurrency)
+	if err != nil {
+		// Whatever was resolved before this is already in the table — the
+		// recording no longer depends on the batch finishing.
+		return res, err
+	}
+	for _, sa := range resolved {
+		if sa == "" {
+			res.Negative++
+			continue
+		}
+		res.Positive++
+	}
+	res.Failed = len(cold) - len(resolved)
+	return res, nil
 }
 
 // lookupSigner returns the signer registered on an owner's kernel account, or
