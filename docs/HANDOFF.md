@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus [`operator-tenancy/`](operator-tenancy/) —
 the full design set, published here 2026-08-12 once the two weaknesses it
 documents were fixed. An identical copy lives in `fleet-lite-app`.
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-22 18:30 UTC*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-22 18:40 UTC*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -3249,7 +3249,7 @@ parity gate requires values.yaml and values-prod.yaml byte-identical outside
 `image.tag`, so a prod-only flag flip must go in both files.
 
 
-## PICK UP HERE — session handoff, 2026-08-22 ~18:30 UTC
+## Session handoff, 2026-08-22 ~18:30 UTC (superseded — see the end)
 
 **The open question is one action wide: send a vehicle share from fleet-lite
 and watch what happens.** Everything that gates it is now verified. Nothing is
@@ -3379,3 +3379,145 @@ New: **an empty-bodied 403 from an in-cluster service is the mesh, not the
 app** — check `linkerd.io/inject` before debugging credentials. And **a tag
 ships everything merged since the last tag**, so read `git log <last-tag>..HEAD`
 before cutting one.
+
+## PICK UP HERE — session handoff, 2026-08-22 ~18:40 UTC
+
+**The share was attempted, and it failed on the one hop nothing had ever
+exercised: the RPC URL. That is now fixed and verified. The share still needs
+sending.**
+
+### What happened, and why the error was better news than it read
+
+The first-ever share was submitted at 18:14:51 UTC and failed:
+
+```
+send share UserOp: failed to call getNonce eth_call: 401 Unauthorized:
+{"jsonrpc":"2.0","error":{"code":-32001,"message":"Unauthorized","data":"API key required"},"id":null}
+```
+
+`job_id=1`, kind `vehicle_share`, tenant `7be1ab9e…` (Kaufmann), token `187963`,
+owner `0xD68cE5748BB7384B2b35d0c457c2Fe303f32B781`, grantee
+`0x6272d24fa6aba09483Bd95E382E6E6272198900d`.
+
+**Nothing reached the chain.** `getNonce` is an `eth_call` — a read — so the
+failure happened before any UserOperation was built, signed or submitted. No gas
+spent, no partial state, nothing to unwind.
+
+And everything upstream of it *worked*, which is what three days of preparation
+bought: trusted-caller key, developer-license JWT, caller scope,
+`manage_vehicles`, entitlement, the live owner from identity-api (the expected
+`0xD68c…B781`), live signer authority, and the signer key decrypting **and
+parsing** — the `0x`-prefix hazard did not fire.
+
+### The cause: a secret that synced perfectly and was still wrong
+
+`prod/fleet-tenancy-api/rpc_url` held **two literal backslashes** — shell escape
+characters captured into the stored value instead of consumed by the shell:
+
+```
+https://rpc.dimo.org/v1/rpc/137\?apiKey\=<32-char key>     73 bytes
+```
+
+Go's `url.Parse` puts the first backslash at the end of the path and the second
+in the query *key*, so the request went out as `/v1/rpc/137%5C?apiKey\=…` — wrong
+path, and a parameter named `apiKey\`. The gateway saw no API key and said so.
+
+Proven rather than inferred, with read-only `eth_chainId` calls: as stored →
+`401`; backslashes removed → `{"result":"0x89"}` (Polygon 137). Cross-check:
+kaufmann-oracle's working `RPC_URL`, which drives the same on-chain burns today,
+is **71 bytes** in exactly the canonical shape — tenancy's was 71 plus the two
+backslashes.
+
+A sweep of every other value in `fleet-tenancy-api-secret` for stray escapes or
+whitespace found **only this one**. `BUNDLER_URL` is clean precisely because it
+has no `?` or `=`, so nothing invited escaping.
+
+### What was done, 18:28 UTC
+
+1. ASM `prod/fleet-tenancy-api/rpc_url` rewritten to 71 bytes — the corrected
+   value derived from the old one with `tr -d '\\'` and written via
+   `--secret-string file://…`, so the key was never retyped, pasted, or put in
+   shell history. Previous version retained as `AWSPREVIOUS`.
+2. ExternalSecret force-synced (`force-sync` annotation); k8s secret confirmed
+   71 bytes, no backslash.
+3. **`kubectl -n prod rollout restart deploy/fleet-tenancy-api`** — required, see
+   the trap below. Both new pods logged `starting vehicle-sharing job queue`
+   (`max_workers: 4`) and `/v1 gate configured`, zero errors.
+4. Verified from inside a running pod, using its own `$RPC_URL` through the
+   mesh: `eth_chainId` → `0x89`. The hop that failed now works from the exact
+   network position and with the exact value the worker will use.
+
+### Next action — unchanged, minus the blocker
+
+**Send the share.** `MaxAttempts: 1` is deliberate, so **job 1 is discarded and
+will never retry** — it must be submitted fresh from the fleet-lite modal. Same
+vehicle and grantee is the natural retry.
+
+```sh
+kubectl -n prod logs -l app.kubernetes.io/name=fleet-tenancy-api \
+  -c fleet-tenancy-api --since=5m -f | grep -iE "share|userop|sacd|bundler|nonce"
+```
+
+**The bundler is now the next untested hop** — nothing has ever reached it. If
+this attempt fails, expect the error to move from `getNonce` to the ZeroDev
+paymaster/bundler call. *A different failure is progress.* `BUNDLER_URL` is
+byte-clean, so a failure there would be project scope or credentials, not
+corruption.
+
+**The modal gives up long before the job does.** The browser polls every 4s for
+30 attempts — **~120 seconds** — while the worker has 10 minutes with a 5-minute
+receipt wait inside it. "The share is taking longer than expected" is the UI
+running out of patience, **not** a terminal state. The log is the authority.
+Only `state: discarded` or `cancelled` is a real failure to the frontend.
+
+To confirm success in the UI you must **close and reopen the modal** — the fleet
+list does not refresh after a share, and the "Already shared with" list is
+filled from a live identity-api SACD query when the modal opens.
+
+### Traps this session paid for
+
+**A synced ExternalSecret proves the value arrived, not that it is correct.**
+`SecretSynced=True`, `SharingConfigured()` true, every setting present — and the
+value was still wrong by two bytes. When a credential is rejected, check the
+value's *bytes* (`od -c`, length) before doubting the credential itself. Compare
+the byte length against a sibling service known to work; that is what identified
+this in one step.
+
+**Write URL-shaped secrets from a file, never as a shell argument.** `?` and `=`
+invite escaping in zsh, and the escapes get stored. `--secret-string file://…`
+with `printf '%s'` (no trailing newline) is the safe form.
+
+**`envFrom.secretRef` means a secret change needs a rollout restart.** The
+chart's `checksum/config` annotation covers the ConfigMap only; an
+ExternalSecret-driven change rolls nothing by itself. Fixing the secret without
+restarting leaves the pods serving the old value and the next share failing
+identically — which would have read as "the fix didn't work".
+
+**And the twin of the standing 403 trap.** That one is "an empty-bodied 403 from
+an in-cluster service is the mesh, not the credential." This one is: **a 401
+naming a missing API key can be a present-but-mangled key**, not an absent one.
+Both are cases where the error names the wrong layer.
+
+### Everything else, unchanged from the previous section
+
+The state table, the bug chain behind the tooltip, `warm-shared-accounts` after
+onboarding any fleet, the 94 untranslated strings, and the standing trap list
+all still apply — read the superseded section above for them.
+
+**Plan 06 step 4** is still blocked on the recorded timeout decision, but the
+options are now measured. Widening kaufmann's transfer worker
+(`internal/onboarding/transfer_shared.go:98`, `10 * time.Minute`) is a one-line
+change, and 15+ still sits under kaufmann's own 30-minute disconnect/delete
+peers and under this service's 20-minute `rescueStuckJobsAfter`. Narrowing this
+service's transfer window (`internal/sharing/shared_ops.go:199`,
+`15 * time.Minute`) would cut a transfer to less than two full 5-minute receipt
+waits and drag `receiptPollingRetries` down with it. **Widening kaufmann is the
+cheaper and safer side.** Note step 4's own text in the plan (lines 333–336) is
+stale — it claims a 10-minute job timeout that #77 changed to 15 for transfers.
+
+**One version check, so it is not re-investigated.** `fleet-lite-app`'s
+`values-prod.yaml:5` reads `tag: e4cfc23` (v0.24.0), which looks like prod is a
+release behind. It is not: the workload runs `6f78118` = **v0.25.0**. The
+checked-out values file is stale relative to what is deployed — the standing
+"verify the image on the workload" trap firing in the opposite direction to
+usual.
