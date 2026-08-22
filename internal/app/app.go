@@ -267,6 +267,13 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// job id alone is a sequential integer anyone could walk.
 	v1.Post("/tenants/:tenantId/vehicles/:tokenId/share", sharingCtrl.ShareVehicle)
 	v1.Get("/tenants/:tenantId/vehicles/:tokenId/share/status", sharingCtrl.ShareStatus)
+	// Ending a share. 202 and a job id like the grant, polled through the
+	// status route above — granting and revoking are two directions of one
+	// relationship and a caller should not learn a second protocol for the
+	// second one. The grantee is a path parameter, matching DELETE
+	// /members/:wallet; the acting member is a query parameter, because a
+	// DELETE body is legal and widely mishandled.
+	v1.Delete("/tenants/:tenantId/vehicles/:tokenId/share/:grantee", sharingCtrl.RevokeShare)
 	// Typed shared-account operations (plan 06 step 3): one of four named ops
 	// — transfer_vehicle, burn_synthetic, burn_vehicle, grant_sacd — signed
 	// with the tenant's signer on the owner's kernel. The body carries an

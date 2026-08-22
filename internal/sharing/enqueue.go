@@ -28,12 +28,32 @@ func (q *Queue) Enqueue(ctx context.Context, args ShareArgs) (int64, error) {
 	return res.Job.ID, nil
 }
 
-// Status reports on a queued share.
+// EnqueueRevoke queues a revocation of a share and returns its job id.
+func (q *Queue) EnqueueRevoke(ctx context.Context, args RevokeArgs) (int64, error) {
+	if q == nil {
+		return 0, ErrQueueUnavailable
+	}
+	res, err := q.Client.Insert(ctx, args, nil)
+	if err != nil {
+		return 0, fmt.Errorf("enqueue revoke: %w", err)
+	}
+	return res.Job.ID, nil
+}
+
+// Status reports on a queued share OR its revocation.
 //
 // Scoped by tenant: the job id alone would otherwise let any caller read any
 // tenant's share outcome, and job ids are sequential integers. The tenant is
 // compared against the one stored in the job's own arguments, so the check
 // cannot drift from what the job will actually do.
+//
+// BOTH KINDS ARE ANSWERED HERE, which is a deliberate exception to the kind
+// check below rather than an oversight. Granting and revoking are two
+// directions of one relationship, they carry the same identifying fields, and a
+// caller that polls a share should poll its revocation the same way rather than
+// learning a second protocol for it. What the kind check keeps out is
+// shared-operation jobs, which are a different surface with a different
+// contract — see SharedOpStatus.
 func (q *Queue) Status(ctx context.Context, tenantID string, jobID int64) (*models.ShareStatus, error) {
 	if q == nil {
 		return nil, ErrQueueUnavailable
@@ -45,11 +65,11 @@ func (q *Queue) Status(ctx context.Context, tenantID string, jobID int64) (*mode
 		}
 		return nil, fmt.Errorf("read share job %d: %w", jobID, err)
 	}
-	if job.Kind != (ShareArgs{}).Kind() {
+	if job.Kind != (ShareArgs{}).Kind() && job.Kind != (RevokeArgs{}).Kind() {
 		// The queue also carries shared-operation jobs, whose args decode into
 		// ShareArgs cleanly enough (tenantId overlaps) that without this check
 		// a shared-op job would be reported here as a share. Vacuous while the
-		// queue held one kind; load-bearing since it holds two.
+		// queue held one kind; load-bearing since it holds three.
 		return nil, ErrJobNotFound
 	}
 

@@ -14,8 +14,10 @@ the callers' local group tables — see `docs/HANDOFF.md`.
 
 Since 2026-08-19 this service is also an **on-chain writer**: vehicle sharing
 grants SACD permissions by sending a UserOperation from the vehicle owner's
-kernel account, signed with the tenant's signer key. Released in `v0.14.0` and
-healthy in prod, but **no share has ever been sent** — see `docs/HANDOFF.md`.
+kernel account, signed with the tenant's signer key. The first production share
+landed on chain 2026-08-22 — see `docs/HANDOFF.md` for the transaction and for
+the two-byte secret that blocked the first attempt. Revocation (a zeroed SACD
+record, not a deletion) is built but not yet exercised on chain.
 It brings River, a bundler connection and a code path that spends gas into the
 same process that serves `/v1/authz`, which is why its queue is small and its
 settings are all-or-nothing.

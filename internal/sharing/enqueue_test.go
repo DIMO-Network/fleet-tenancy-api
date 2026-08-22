@@ -57,6 +57,8 @@ func queueFixture(t *testing.T) *Queue {
 	require.NoError(t, river.AddWorkerSafely(workers,
 		NewShareWorker(&logger, settings, &stubAuthorizer{}, &stubFleet{})))
 	require.NoError(t, river.AddWorkerSafely(workers,
+		NewRevokeWorker(&logger, settings, &stubAuthorizer{}, &stubFleet{})))
+	require.NoError(t, river.AddWorkerSafely(workers,
 		NewSharedOpWorker(&logger, settings, &stubOpAuthorizer{}, &stubSignerGate{}, &opFleet{})))
 
 	q, err := NewQueue(context.Background(), &logger, settings, workers)
@@ -140,4 +142,53 @@ func TestNilQueue_SharedOpSurfaceIsUnavailable(t *testing.T) {
 	assert.ErrorIs(t, err, ErrQueueUnavailable)
 	_, err = q.SharedOpStatus(context.Background(), "t1", 1)
 	assert.ErrorIs(t, err, ErrQueueUnavailable)
+	_, err = q.EnqueueRevoke(context.Background(), RevokeArgs{})
+	assert.ErrorIs(t, err, ErrQueueUnavailable)
+}
+
+// THE DELIBERATE EXCEPTION to the kind check: Status answers for a revocation
+// as well as a share, because the two are directions of one relationship and a
+// caller should not learn a second protocol to poll the second one. What the
+// kind check still keeps out is shared-operation jobs.
+//
+// Tested against a real River queue rather than inferred, because this is the
+// property the endpoint's security note hangs on — job ids are sequential and
+// cheap to walk.
+func TestQueue_StatusAnswersForRevocationsButNotSharedOps(t *testing.T) {
+	q := queueFixture(t)
+	ctx := context.Background()
+
+	revokeJobID, err := q.EnqueueRevoke(ctx, RevokeArgs{
+		TenantID: queueTenantA, TokenID: 42, Grantee: testGrantee.Hex(),
+	})
+	require.NoError(t, err)
+	opJobID, err := q.EnqueueSharedOp(ctx, SharedOpArgs{
+		TenantID: queueTenantA, TokenID: 42, Op: OpBurnVehicle,
+	})
+	require.NoError(t, err)
+
+	t.Run("the owning tenant polls a revocation on the share status route", func(t *testing.T) {
+		status, err := q.Status(ctx, queueTenantA, revokeJobID)
+		require.NoError(t, err)
+		assert.Equal(t, revokeJobID, status.JobID)
+		assert.Equal(t, "available", status.State)
+		assert.False(t, status.IsSuccessful)
+	})
+
+	t.Run("another tenant gets not-found, not forbidden", func(t *testing.T) {
+		_, err := q.Status(ctx, queueTenantB, revokeJobID)
+		assert.ErrorIs(t, err, ErrJobNotFound,
+			"a revocation is scoped exactly as a share is")
+	})
+
+	t.Run("widening for revocations did not widen for shared ops", func(t *testing.T) {
+		_, err := q.Status(ctx, queueTenantA, opJobID)
+		assert.ErrorIs(t, err, ErrJobNotFound,
+			"the kind check must still separate the two surfaces")
+	})
+
+	t.Run("the shared-op reader does not answer for a revocation either", func(t *testing.T) {
+		_, err := q.SharedOpStatus(ctx, queueTenantA, revokeJobID)
+		assert.ErrorIs(t, err, ErrJobNotFound)
+	})
 }

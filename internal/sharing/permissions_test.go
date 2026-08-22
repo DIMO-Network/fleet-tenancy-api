@@ -100,3 +100,28 @@ func TestExpirationFrom(t *testing.T) {
 			"a share must never be created already expired")
 	})
 }
+
+// A revocation writes both zeroes. Each alone would revoke — SACD checks
+// `block.timestamp < expiration && (permissions >> 2n) & 3 == 3`, so a zero
+// mask fails the second clause and a zero expiration the first — and writing
+// both is what makes the record unambiguously dead regardless of which clause
+// a given contract version or indexer looks at.
+func TestRevocationWritesBothZeroes(t *testing.T) {
+	assert.Equal(t, big.NewInt(0), NoPermissions(), "an empty mask grants nothing")
+	assert.Equal(t, big.NewInt(0), RevokedExpiration(), "a zero expiration is already past")
+
+	// The inverse property is the one that matters: neither granting mask may
+	// ever collide with the revoking one, or a revocation would re-grant.
+	assert.NotEqual(t, NoPermissions(), DefaultPermissions())
+	assert.NotEqual(t, NoPermissions(), FullPermissions())
+}
+
+// ExpirationFrom must never produce the revoking expiration, or an ordinary
+// share would land already dead and read as a silent failure.
+func TestExpirationFromNeverProducesARevokedRecord(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	for _, d := range []time.Duration{0, -time.Hour, time.Hour, 365 * 24 * time.Hour} {
+		assert.NotEqual(t, RevokedExpiration(), ExpirationFrom(now, d),
+			"a share's expiration must never equal the revoking one")
+	}
+}

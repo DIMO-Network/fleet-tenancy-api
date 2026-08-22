@@ -3615,11 +3615,14 @@ now run for real, once, successfully.
 
 Open, and now worth attention for the first time:
 
-1. **Nothing has revoked a share.** There is no revoke route — `DELETE
-   /v1/tenants/{id}/vehicles/{tokenId}` is entitlement revocation, not SACD.
-   A share is a year long and cannot currently be withdrawn through this
-   service. That is a gap, not a decision, and it is now load-bearing because
-   a real grant exists.
+1. ~~**Nothing has revoked a share.**~~ **BUILT, PR open, not yet deployed.**
+   `DELETE /v1/tenants/{id}/vehicles/{tokenId}/share/{grantee}?wallet=` — 202
+   and a job id, polled through the *existing* share status route. Note
+   `DELETE /v1/tenants/{id}/vehicles/{tokenId}` remains entitlement
+   revocation, not SACD; the two are different endpoints and mean different
+   things. **Nothing has revoked a share on chain yet** — the path is as
+   unexercised as the share path was this morning, and the same caution
+   applies.
 2. **`MaxAttempts: 1` means a failed share is final.** Job 1 (the RPC failure)
    stayed discarded; job 2 was a fresh submit. Nothing retries, by design.
 3. The second share is unexercised — one success is not a pattern, and the
@@ -3635,8 +3638,21 @@ not, and why load through `fleets.dimo.co` is not a valid test.
 
 ### Next actions
 
-1. **Decide whether shares need a revoke path.** See the gap above. A year is
-   a long time to be unable to take something back.
+1. **Ship the revoke path and exercise it once**, the way the share was
+   exercised. Deploy order is the usual one — **this service first**, because
+   an unrecognised route is a 404 and fleet-lite treats that as a failure.
+   Three things to know before the first real revocation:
+   - It writes a **zeroed** SACD record (`permissions=0`, `expiration=0`); it
+     does not delete anything. identity-api may therefore keep returning that
+     grantee with an epoch `expiresAt`, so anything reading "who is this
+     shared with" must filter to live grants or a successful revocation will
+     look like it did nothing.
+   - `MaxAttempts: 1`, like a share, and the argument for more is a trap: the
+     retry that looks free is the one that zeroes a NEW grant made between a
+     timed-out receipt poll and the retry firing.
+   - `revoke UserOp returned no receipt` means **unknown**, and here the stake
+     is inverted from a share's — the customer believes access is gone when it
+     may not be.
 2. **Run `warm-shared-accounts` after onboarding any fleet** — unchanged.
 3. **Plan 06 step 4** — unchanged, and the timeout decision is still the
    blocker. Widening kaufmann's transfer worker

@@ -45,7 +45,8 @@ CHAIN_ID: 137
 # unset means the feature is off and the job queue never starts, which is what
 # every environment looks like until the SACD and bundler settings are in place.
 #
-# SACD_ADDRESS is the DIMO Service Access Control Document contract — a separate
+# SACD_ADDRESS is the DIMO Service Access Contract Definition contract — the
+# expansion is per DIMO's own ISacd.sol, not "Access Control Document" — a separate
 # contract from both the registry and the VehicleId NFT above. The Polygon
 # mainnet value is 0x3c152B5d96769661008Ff404224d6530FCAC766d.
 #
