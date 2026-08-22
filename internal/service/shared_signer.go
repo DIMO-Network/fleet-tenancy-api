@@ -20,15 +20,6 @@ import (
 // 403, an accounts-api outage is a 5xx.
 var ErrSignerNotAuthorized = errors.New("owner account has not authorized this tenant's signer")
 
-// signerCacheTTL bounds how stale a display gate may be.
-//
-// The window is what separates the button fleet-lite renders from the check
-// made when the share is submitted. Too long and a revoked signer keeps
-// offering a share that then 403s; too short and every vehicle-list render
-// fans out to accounts-api. A minute keeps the disagreement to something a
-// user would read as "I clicked too fast" rather than as a broken feature.
-const signerCacheTTL = time.Minute
-
 // SharedSignerService answers one question: may this tenant sign for this
 // owner's kernel account?
 //
