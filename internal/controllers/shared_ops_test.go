@@ -141,6 +141,9 @@ func opsFixture(t *testing.T, queue *opsQueue, clientID string) *fiber.App {
 	w := store.DBS().Writer
 
 	cleanup := func() {
+		// The signer gate remembers what accounts-api said, so a negative left
+		// by an earlier run would deny this one before the fake is consulted.
+		_, _ = w.Exec(`DELETE FROM shared_accounts WHERE lower(wallet) = lower($1)`, opsOwnerWallet)
 		_, _ = w.Exec(`DELETE FROM tenant_credentials WHERE tenant_id = ANY($1)`,
 			"{"+opsTenant+","+opsChildTenant+"}")
 		_, _ = w.Exec(`DELETE FROM tenants WHERE id = ANY($1)`,
@@ -172,7 +175,7 @@ func opsFixture(t *testing.T, queue *opsQueue, clientID string) *fiber.App {
 	creds := &opsCreds{effective: &service.EffectiveCredential{
 		TenantID: opsTenant, ClientID: clientID, SignerAddress: signerAddr,
 	}}
-	signerSvc := service.NewSharedSignerService(&logger, &opsAccounts{signer: signerAddr}, creds)
+	signerSvc := service.NewSharedSignerService(&logger, &opsAccounts{signer: signerAddr}, creds, service.NewSharedAccountStore(&store))
 	shares := service.NewShareAuthorizer(&logger, &store,
 		&opsIdentity{owners: map[int64]string{opsTokenID: opsOwnerWallet}}, signerSvc, creds, cfg)
 	tenants := service.NewTenantService(&logger, &store)

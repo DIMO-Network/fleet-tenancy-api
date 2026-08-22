@@ -39,6 +39,7 @@ type ProvisionService struct {
 	pdb      *db.Store
 	members  *MemberService
 	creds    credentialProvider
+	shared   *SharedAccountStore
 	accounts gateway.AccountsAPI
 
 	// email notifies the person they were given access. nil or unconfigured
@@ -55,7 +56,8 @@ type accessNotifier interface {
 
 func NewProvisionService(logger *zerolog.Logger, pdb *db.Store, members *MemberService,
 	creds credentialProvider, accounts gateway.AccountsAPI) *ProvisionService {
-	return &ProvisionService{logger: logger, pdb: pdb, members: members, creds: creds, accounts: accounts}
+	return &ProvisionService{logger: logger, pdb: pdb, members: members, creds: creds,
+		accounts: accounts, shared: NewSharedAccountStore(pdb)}
 }
 
 // UseAccessEmail wires the access-granted notification. Without it every
@@ -130,19 +132,19 @@ func (s *ProvisionService) Provision(ctx context.Context, tenantID string, in *m
 		return nil, err
 	}
 
-	// Record the signer registered on a created account. Best-effort by
-	// design: the membership is already written and correct, and this column
-	// is provenance ("which signer can act on this person's kernel"), not an
-	// authorization input.
+	// Record the signer registered on a created account, so the signer gate
+	// never has to ask accounts-api about this wallet at all — an account this
+	// service just created with a known signer is the one case where the answer
+	// is certain at write time.
+	//
+	// Best-effort by design: the membership is already written and correct, and
+	// a missed record costs one lookup later rather than a wrong answer.
 	if created {
 		cred, credErr := s.creds.Effective(ctx, tenantID)
 		if credErr == nil && cred.SignerAddress != "" {
 			checksummed := common.HexToAddress(wallet).Hex()
-			if _, uerr := s.pdb.DBS().Writer.ExecContext(ctx,
-				`UPDATE users SET shared_account_signer_address = $1, updated_at = NOW()
-				  WHERE wallet = $2`,
-				common.HexToAddress(cred.SignerAddress).Hex(), checksummed); uerr != nil {
-				s.logger.Warn().Err(uerr).Str("wallet", checksummed).
+			if rerr := s.shared.Record(ctx, checksummed, cred.SignerAddress); rerr != nil {
+				s.logger.Warn().Err(rerr).Str("wallet", checksummed).
 					Msg("provision: could not record shared-account signer")
 			}
 		}

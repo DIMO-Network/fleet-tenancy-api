@@ -99,15 +99,18 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 
 	// Vehicle sharing (docs/HANDOFF.md, "Vehicle sharing").
 	//
-	// The signer gate asks accounts-api live rather than reading
-	// users.shared_account_signer_address, which is empty for every owner whose
-	// account kaufmann-oracle created — see SharedSignerService.
+	// The signer gate reads shared_accounts, the durable record of what
+	// accounts-api has already said, and asks live only for owners nothing is
+	// known about — recording each answer. Safe to remember because
+	// providedSignerAddress cannot be revoked (docs/signer-permanence.md); the
+	// migration explains why negatives still age out and positives never do.
 	//
 	// shareQueue is nil when sharing is unconfigured. The routes are registered
 	// either way: an unconfigured environment answers 503, which tells the
 	// caller the feature is off, where a 404 would look like a version skew.
 	sharedSignerSvc := service.NewSharedSignerService(logger,
-		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint), credSvc)
+		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint), credSvc,
+		service.NewSharedAccountStore(pdb))
 	shareAuthorizer := service.NewShareAuthorizer(logger, pdb,
 		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint),
 		sharedSignerSvc, credSvc, settings)

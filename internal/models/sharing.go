@@ -20,6 +20,20 @@ type ShareableOwnersInput struct {
 // the caller can compare them against its own stored addresses as strings.
 type ShareableOwnersResult struct {
 	Owners []string `json:"owners"`
+	// Unresolved names owners this call could not determine within its time
+	// budget — nothing is known about them yet and accounts-api was not
+	// reached in time.
+	//
+	// It exists so a slow first render is not a WRONG one. Without it, an
+	// owner that simply had not been looked up yet is indistinguishable from
+	// one whose account declined, and the caller renders "this account hasn't
+	// authorized sharing" about a question nobody has asked. Callers should
+	// treat these as unknown and try again; each call resolves more of them,
+	// so a large fleet warms over a few renders instead of timing out forever
+	// on one.
+	//
+	// Additive: a caller that ignores the field behaves exactly as before.
+	Unresolved []string `json:"unresolved,omitempty"`
 }
 
 // ShareVehicleInput is a request to grant a wallet SACD permissions on a
