@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus [`operator-tenancy/`](operator-tenancy/) —
 the full design set, published here 2026-08-12 once the two weaknesses it
 documents were fixed. An identical copy lives in `fleet-lite-app`.
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-21 03:45 UTC*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-22 18:30 UTC*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -2971,7 +2971,7 @@ confirmed as far as the provisioning file in the Grafana pod
 (`/tmp/dashboards/fleet-golden-signals.json`, written by the sidecar) rather
 than by loading the dashboard. Open it and look.
 
-## PICK UP HERE — session handoff, 2026-08-20 ~16:00 UTC
+## Session handoff, 2026-08-20 ~16:00 UTC (superseded — see the end)
 
 **Nothing is half-finished and nothing is waiting on a human.** Everything below
 is released, deployed and verified in prod. Pick any of the four next actions.
@@ -3091,7 +3091,7 @@ default-deny inbound policy — rename it and the scrape fails with an
 empty-bodied proxy 403 that looks like the app rejecting the request.
 
 
-## PICK UP HERE — session handoff, 2026-08-21 ~03:45 UTC
+## Session handoff, 2026-08-21 ~03:45 UTC (superseded — see the end)
 
 Three plans moved tonight; two of them finished. Everything below is released,
 deployed and verified on the workload, and every gate was met with recorded
@@ -3247,3 +3247,135 @@ strips comments from values files (rationale goes in templates/); Helm's
 `mon-http` as a port name is load-bearing. New tonight: kaufmann's values
 parity gate requires values.yaml and values-prod.yaml byte-identical outside
 `image.tag`, so a prod-only flag flip must go in both files.
+
+
+## PICK UP HERE — session handoff, 2026-08-22 ~18:30 UTC
+
+**The open question is one action wide: send a vehicle share from fleet-lite
+and watch what happens.** Everything that gates it is now verified. Nothing is
+half-finished; nothing is waiting on a human except that click.
+
+### Why this is the whole task
+
+**No vehicle share has ever been sent in production.** The path shipped in
+`v0.14.0` on 2026-08-19 and has never executed once. It signs a UserOperation
+from the vehicle owner's kernel account with the tenant's signer and spends
+gas. Everything upstream of it has now been proven; the path itself has not.
+
+Three days of work were spent getting to a state where trying it is
+reasonable. Do not re-derive any of it:
+
+| Question | Answer, and how it was established |
+|---|---|
+| Are the two copies of the signer key the same key? | Yes. `signer-diff` in prod 2026-08-21: `agree=11 differ=0 missing=0 stored_address_drift=0 decrypt_failed=0` |
+| Would the key parse on the share path? | Yes. `sharing.go` parses without trimming a `0x` prefix; `signer-diff` warns if a prefixed key ever appears, and none does |
+| Does accounts-api authorise the tenant signer on a real owner? | Yes. `0xD68cE5748BB7384B2b35d0c457c2Fe303f32B781` — confirmed from the roster, from kaufmann's b2b transfer modal ("SHARED ACCOUNT MODE"), and from the warm run |
+| Is the display gate telling the truth? | Yes, since `v0.26.0`. It was silently discarding every answer it learned — see below |
+
+### The state to start from
+
+Prod, verified on the workload rather than from ArgoCD:
+
+| Service | Image | Tag |
+|---|---|---|
+| fleet-tenancy-api | `3705267` | `v0.26.0` |
+| fleet-lite-app | `6f78118` | `v0.25.0` |
+| kaufmann-oracle | `1.54.0` | `v1.54.0` |
+
+The share queue is running on both tenancy pods (`vehicle_sharing`,
+`max_workers: 4`), and `SACD_ADDRESS`, `VEHICLE_NFT_ADDRESS`,
+`SYNTHETIC_NFT_ADDRESS` are in the configmap with `BUNDLER_URL` and `RPC_URL`
+in the secret — `SharingConfigured()` requires all of them and is
+all-or-nothing by design.
+
+`shared_accounts` is warm for the Kaufmann tenant: **187 owners, 25 positive,
+162 negative, 0 failed**, warmed 2026-08-22 17:53 UTC in 23 seconds by
+`warm-shared-accounts`. A re-run reports "nothing to warm".
+
+### How to send one, and what to watch
+
+fleet-lite → fleet list → the share icon on a row whose owner is one of the 25.
+The modal takes a wallet and a duration; submitting queues a job and polls.
+
+Watch both sides while it runs — the interesting failure is a UserOp that
+neither lands nor errors cleanly:
+
+```sh
+kubectl -n prod logs -l app.kubernetes.io/name=fleet-tenancy-api \
+  -c fleet-tenancy-api --since=10m -f | grep -iE "share|userop|sacd|bundler"
+```
+
+Mechanics that shape what you will see:
+
+- `MaxAttempts: 1`, deliberately. A retried on-chain write is not idempotent.
+- Worker timeout is **10 minutes**; the receipt wait is shorter. `share UserOp
+  returned no receipt; it may still land on chain` is the one outcome that is
+  neither success nor clean failure — treat it as "unknown, check the chain",
+  never as "did not happen".
+- `AuthorizeShare` re-checks everything before spending gas: entitlement, live
+  owner from identity-api, live signer authority, then the key. A 403 here is
+  a policy answer; a 5xx is infrastructure. They must not be collapsed.
+
+**Revert is a config flip, not a release** — the sharing settings are
+all-or-nothing, so emptying one of them turns the feature off and the routes
+answer 503 rather than 404.
+
+### What was actually wrong, 2026-08-22 — the bug chain behind "couldn't be checked"
+
+Worth reading before touching the signer gate, because two of these were
+introduced by the fix for the previous one.
+
+1. **`/metrics` had been 500ing since 2026-08-21 15:35 UTC**, hiding the
+   service from Grafana on its first day of real traffic. `c.Method()` is a
+   zero-copy view over fasthttp's reused request buffer; Prometheus retains
+   label strings, so the stored label mutated into `method="GETT"`, collided,
+   and every scrape failed. Fixed in `v0.24.0`. **Never store a fiber
+   accessor's string anywhere that outlives the request** — the sibling
+   middleware in fleet-lite and kaufmann has not been audited for this.
+2. **`shareable-owners` took 45 seconds** for an operator tenant: one
+   sequential accounts-api call per distinct owner, with the tenant credential
+   resolved *inside* each check. `v0.25.0` moved the answers into
+   `shared_accounts` — safe to store because `providedSignerAddress` cannot be
+   revoked (`docs/signer-permanence.md`), with positives permanent and
+   negatives ageing out in a day.
+3. **That fix discarded everything it learned.** The recording loop used the
+   same 3-second budget context the lookups ran under, and it ran *after*
+   `wg.Wait()` — so on every budget-exhausted call, every write failed with
+   `context deadline exceeded`. Prod showed `resolved:9 unresolved:153`, then
+   `resolved:22 unresolved:140`: the store never warmed and the UI said
+   "Sharing status couldn't be checked" forever. Fixed in `v0.26.0` by
+   recording inside each worker on a context the budget cannot cancel.
+4. **The warm job failed twice on first contact with prod**, both worth
+   knowing: unmeshed, it got an **empty-bodied 403** from identity-api that
+   reads exactly like a rejected credential but is the namespace's default-deny
+   policy refusing an unmeshed caller; meshed, the Job hung forever because the
+   linkerd sidecar outlives the container. The fix for the second is the
+   shutdown POST `publish-group-attestations` already used.
+
+### Next actions, in the order they make sense
+
+1. **Send the share.** Everything above exists to make this reasonable.
+2. **Run `warm-shared-accounts` after onboarding any fleet** — the request
+   path's 3-second budget is sized for the handful of owners a warm store
+   leaves it, not for a cold one.
+3. **Plan 06 step 4** — point kaufmann's three workers at the shared-ops
+   endpoint. Blocked on one decision recorded in the plan: this service's
+   transfer job runs 15 minutes against kaufmann's 10-minute poll, so a
+   timed-out poll could disagree with a landed transfer. Widen one or narrow
+   the other *before* writing the loop.
+4. **94 untranslated strings** in fleet-lite (`web/xliff/es.xlf`: 464 sources,
+   370 targets) serving English to a Chilean fleet.
+
+### Traps — the standing list, plus what this session added
+
+Merging deploys chart changes immediately but code only on a `v*` tag; verify
+the image on the workload, not ArgoCD's status; the version-bump workflow
+strips comments from values files; Helm's `default` treats `0` as empty; the
+prod DB tunnel cert lasts four minutes; `mon-http` as a port name is
+load-bearing; kaufmann's values parity gate requires both values files
+byte-identical outside `image.tag`.
+
+New: **an empty-bodied 403 from an in-cluster service is the mesh, not the
+app** — check `linkerd.io/inject` before debugging credentials. And **a tag
+ships everything merged since the last tag**, so read `git log <last-tag>..HEAD`
+before cutting one.
