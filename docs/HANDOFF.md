@@ -3511,7 +3511,19 @@ been audited. It has been now, prompted by a `TargetDown` alert:
 `8c4ac87` landed, and its own header comment still called the two "identical".
 `/metrics` answered 500 on every scrape from the `v0.25.0` rollout (16:54 UTC)
 onward — 14 registry collisions, the first on `method="GETT"`, same signature.
-Fixed in `fleet-lite-app#146`.
+Fixed in `fleet-lite-app#146`, released `v0.25.1` (image `75e9215`) and rolled
+out 18:49 UTC.
+
+**Verified in a way a restart could not fake.** A fresh pod answers 200
+regardless, because the registry is in memory — so the check was to re-create
+the failure condition: 450 concurrent in-cluster requests, including **150
+concurrent POSTs to `/identity/proxy`**, one of the two routes that actually
+carried a corrupted series. Afterwards `/metrics` still answered 200 and every
+method label was a real HTTP method. Prometheus then reported `up=1` on both
+targets and the `TargetDown` alert cleared. (An earlier attempt to drive load
+through `fleets.dimo.co` was largely absorbed by Cloudflare — only 16 of 240
+requests reached the pod. Generate load in-cluster against the pod's own
+`:8084`, not through the edge.)
 
 **kaufmann is clean.** It uses only `shared/pkg/middleware/metrics`, which
 labels from `c.Route().Method` / `c.Route().Name` — boot-time route-registration
