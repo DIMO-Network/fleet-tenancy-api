@@ -65,6 +65,7 @@ func main() {
 		subcommands.Register(&reconcileVehiclesCmd{logger: logger, settings: settings}, "vehicles")
 		subcommands.Register(&signerDiffCmd{logger: logger, settings: settings}, "signers")
 		subcommands.Register(&provisionSignerCmd{logger: logger, settings: settings}, "signers")
+		subcommands.Register(&warmSharedAccountsCmd{logger: logger, settings: settings}, "signers")
 		subcommands.Register(&publishGroupAttestationsCmd{logger: logger, settings: settings}, "attestations")
 		subcommands.Register(&pushPostmarkTemplatesCmd{logger: logger, settings: settings}, "email")
 		flag.Parse()

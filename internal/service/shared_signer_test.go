@@ -3,12 +3,15 @@ package service
 import (
 	"context"
 	"errors"
+	"math/big"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/gateway"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/models"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/lib/pq"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -321,6 +324,170 @@ func TestFilterSignable_ResolvesTheCredentialOncePerCall(t *testing.T) {
 
 	assert.Equal(t, 1, creds.effectiveCalls, "one effective-credential resolution for the whole fleet")
 	assert.Equal(t, 1, creds.mintCalls, "one minted JWT for the whole batch")
+}
+
+// ---- a blown budget must not throw away what it learned (2026-08-22) ----
+
+// slowAccounts answers after a fixed delay, which is what lets a batch be made
+// to outrun its budget on purpose. The delay is per call and the calls are
+// concurrent, so the batch advances one signerLookupConcurrency-wide wave per
+// delay and the budget lands mid-flight, exactly as it does in prod.
+type slowAccounts struct {
+	inner *fakeAccounts
+	delay time.Duration
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *slowAccounts) GetAccountByEmail(e, j string) (*gateway.Account, error) {
+	return c.inner.GetAccountByEmail(e, j)
+}
+func (c *slowAccounts) CreateAccount(e, s, j string) (*gateway.Account, error) {
+	return c.inner.CreateAccount(e, s, j)
+}
+func (c *slowAccounts) GetAccountByWallet(w, j string) (*gateway.Account, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	time.Sleep(c.delay)
+	return c.inner.GetAccountByWallet(w, j)
+}
+func (c *slowAccounts) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// THE REGRESSION. A call that runs out of budget must still leave every answer
+// it obtained in shared_accounts.
+//
+// It did not. resolveMany drained its results and called store.Record with the
+// SAME context the 3-second budget was attached to, and it drained only after
+// wg.Wait() — so on precisely the calls that exhaust the budget, which are the
+// only calls where any of this matters, every write failed with "context
+// deadline exceeded" and the fleet's answers were computed, paid for at
+// accounts-api, and dropped on the floor. The Kaufmann tenant's 162 owners
+// resolved 9 and then 22 across two renders half an hour apart: the same cold
+// work, redone and rediscarded, with the store never warming and the share
+// button never appearing.
+//
+// Two properties, and the second is the one that makes a fleet converge:
+// the answers are in the table, and the NEXT call asks only about what this one
+// did not reach.
+func TestFilterSignable_BudgetExhaustionKeepsWhatItLearned(t *testing.T) {
+	// Enough owners that no plausible machine speed resolves them all inside
+	// the budget, and a budget several waves long so a slow machine still gets
+	// at least one wave through. Both directions matter: the test is only
+	// meaningful if the call BOTH resolves some owners and runs out on others.
+	const owners = 120
+	wallets := make([]string, owners)
+	byWallet := make(map[string]*gateway.Account, owners)
+	for i := range wallets {
+		w := common.BigToAddress(big.NewInt(int64(0x51900000 + i))).Hex()
+		wallets[i] = w
+		byWallet[lower(w)] = &gateway.Account{WalletAddress: w, ProvidedSignerAddress: tenantSigner}
+	}
+
+	accounts := &slowAccounts{inner: &fakeAccounts{byWallet: byWallet}, delay: 100 * time.Millisecond}
+	svc := signerFixture(t, accounts.inner, tenantSigner)
+	svc.accounts = accounts
+	svc.coldBudget = 500 * time.Millisecond
+
+	store := svc.store
+	clear := func() {
+		lowered := make([]string, len(wallets))
+		for i, w := range wallets {
+			lowered[i] = strings.ToLower(w)
+		}
+		// lower() on both sides — rows are stored EIP-55 checksummed, so an
+		// exact match against differently-cased input deletes nothing.
+		_, _ = store.pdb.DBS().Writer.Exec(
+			`DELETE FROM shared_accounts WHERE lower(wallet) = ANY($1)`, pq.Array(lowered))
+	}
+	clear()
+	t.Cleanup(clear)
+
+	ctx := context.Background()
+	got, unresolved, err := svc.FilterSignable(ctx, "t1", wallets)
+	require.NoError(t, err, "a blown budget is not an upstream failure")
+	require.NotEmpty(t, got, "the call must have resolved some owners or it proves nothing")
+	require.NotEmpty(t, unresolved, "the call must have run out of budget or it proves nothing")
+
+	known, err := store.Lookup(ctx, wallets)
+	require.NoError(t, err)
+	assert.Len(t, known, len(got),
+		"every answer obtained before the deadline must be in the table; "+
+			"recording them on the expiring budget context threw all of them away")
+
+	// Convergence: the second render pays only for what the first did not
+	// reach. Before the fix it re-asked accounts-api about all 120, forever.
+	asked := accounts.callCount()
+	_, unresolved2, err := svc.FilterSignable(ctx, "t1", wallets)
+	require.NoError(t, err)
+	assert.Less(t, len(unresolved2), len(unresolved), "the second render must make progress")
+	assert.Equal(t, len(unresolved)-len(unresolved2), accounts.callCount()-asked,
+		"the second render asks only about the owners the first one never reached")
+}
+
+// Warm is the out-of-band path: no budget, so a fleet the request path would
+// need a dozen renders to reach is resolved in one run. And it is re-runnable —
+// the second run asks accounts-api nothing, because a positive is permanent.
+func TestWarm_ResolvesTheWholeFleetAndIsCheapToRepeat(t *testing.T) {
+	const owners = 40
+	wallets := make([]string, owners)
+	byWallet := make(map[string]*gateway.Account, owners)
+	for i := range wallets {
+		w := common.BigToAddress(big.NewInt(int64(0x51910000 + i))).Hex()
+		wallets[i] = w
+		// Half are shareable, half are ordinary wallets accounts-api has never
+		// heard of — roughly the real mix, and both answers must be recorded.
+		if i%2 == 0 {
+			byWallet[lower(w)] = &gateway.Account{WalletAddress: w, ProvidedSignerAddress: tenantSigner}
+		}
+	}
+
+	accounts := &countingAccounts{inner: &fakeAccounts{byWallet: byWallet}}
+	svc := signerFixture(t, accounts.inner, tenantSigner)
+	svc.accounts = accounts
+
+	store := svc.store
+	clear := func() {
+		lowered := make([]string, len(wallets))
+		for i, w := range wallets {
+			lowered[i] = strings.ToLower(w)
+		}
+		_, _ = store.pdb.DBS().Writer.Exec(
+			`DELETE FROM shared_accounts WHERE lower(wallet) = ANY($1)`, pq.Array(lowered))
+	}
+	clear()
+	t.Cleanup(clear)
+
+	ctx := context.Background()
+	res, err := svc.Warm(ctx, "t1", wallets, 4)
+	require.NoError(t, err)
+	assert.Equal(t, owners, res.Cold, "nothing was known, so every owner is cold")
+	assert.Equal(t, owners/2, res.Positive)
+	assert.Equal(t, owners/2, res.Negative, "'asked, has none' is an answer worth recording too")
+	assert.Zero(t, res.Failed)
+
+	known, err := store.Lookup(ctx, wallets)
+	require.NoError(t, err)
+	assert.Len(t, known, owners, "the whole fleet resolved in one run, not a dozen renders")
+
+	// Re-running is cheap: everything is known and nothing has aged out.
+	asked := accounts.calls
+	res, err = svc.Warm(ctx, "t1", wallets, 4)
+	require.NoError(t, err)
+	assert.Zero(t, res.Cold, "a second run has nothing to ask about")
+	assert.Equal(t, asked, accounts.calls, "a warm run must not re-ask what it already recorded")
+
+	// And the display gate now answers from the table alone.
+	got, unresolved, err := svc.FilterSignable(ctx, "t1", wallets)
+	require.NoError(t, err)
+	assert.Empty(t, unresolved, "a warmed fleet leaves the render nothing to resolve")
+	assert.Len(t, got, owners/2)
+	assert.Equal(t, asked, accounts.calls, "and nothing to ask accounts-api")
 }
 
 type countingCreds struct {
