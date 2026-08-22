@@ -82,6 +82,29 @@ func FullPermissions() *big.Int {
 	)
 }
 
+// NoPermissions is the empty mask — every permission ungranted. It is half of
+// what a revocation writes; see RevokedExpiration for the other half.
+func NoPermissions() *big.Int { return big.NewInt(0) }
+
+// RevokedExpiration is the zero expiration a revocation writes alongside
+// NoPermissions.
+//
+// EITHER ONE ALONE REVOKES, and writing both is the point. SACD's check is
+//
+//	block.timestamp < expiration && (permissions >> 2n) & 3 == 3
+//
+// so a zero mask fails the second clause and a zero expiration fails the first.
+// A revocation is the one operation that must not depend on which clause a
+// given contract version evaluates, or on a node's view of block.timestamp: it
+// leaves a record that reads as unambiguously dead to anything inspecting it,
+// on-chain or off.
+//
+// Note SACD grants the token's owner every permission regardless of any record
+// (`ownerOf(tokenId) == grantee` short-circuits the check), so revoking an
+// owner is meaningless rather than dangerous. ValidateGrantee refuses to create
+// such a grant in the first place.
+func RevokedExpiration() *big.Int { return big.NewInt(0) }
+
 // indefiniteYears is how far out an "indefinite" share is set. SACD has no
 // never-expires value, so both the onboarding mint and kaufmann's re-share use
 // forty years and this matches them.

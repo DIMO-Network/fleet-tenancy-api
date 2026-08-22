@@ -96,6 +96,9 @@ type opsQueue struct {
 func (q *opsQueue) Enqueue(context.Context, sharing.ShareArgs) (int64, error) {
 	return 0, fmt.Errorf("unexpected share enqueue in a shared-ops test")
 }
+func (q *opsQueue) EnqueueRevoke(context.Context, sharing.RevokeArgs) (int64, error) {
+	return 0, fmt.Errorf("unexpected revoke enqueue in a shared-ops test")
+}
 func (q *opsQueue) Status(context.Context, string, int64) (*models.ShareStatus, error) {
 	return nil, fmt.Errorf("unexpected share status read in a shared-ops test")
 }

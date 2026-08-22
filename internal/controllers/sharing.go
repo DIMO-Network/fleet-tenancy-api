@@ -23,6 +23,7 @@ const maxShareableOwners = 200
 // handlers can be tested without River or a database.
 type shareQueue interface {
 	Enqueue(ctx context.Context, args sharing.ShareArgs) (int64, error)
+	EnqueueRevoke(ctx context.Context, args sharing.RevokeArgs) (int64, error)
 	Status(ctx context.Context, tenantID string, jobID int64) (*models.ShareStatus, error)
 	EnqueueSharedOp(ctx context.Context, args sharing.SharedOpArgs) (int64, error)
 	SharedOpStatus(ctx context.Context, tenantID string, jobID int64) (*models.ShareStatus, error)
@@ -117,6 +118,78 @@ func (c *SharingController) ShareVehicle(ctx *fiber.Ctx) error {
 		c.logger.Err(err).Str("tenant_id", tenantID).Int64("token_id", tokenID).
 			Msg("enqueue share")
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to queue the share")
+	}
+
+	return ctx.Status(fiber.StatusAccepted).JSON(models.ShareVehicleResult{JobID: jobID})
+}
+
+// RevokeShare — DELETE /v1/tenants/:tenantId/vehicles/:tokenId/share/:grantee?wallet=
+//
+// Ends a share by writing a zeroed SACD record. Returns 202 and a job id,
+// polled through the same status route a share uses.
+//
+// 202 RATHER THAN 204, which is what every other DELETE on this service
+// returns. The others complete inside the request; this one waits on a bundler,
+// so a 204 would assert that access is gone at a moment when the UserOperation
+// has not been sent. Taking access away is precisely the case where a caller
+// must not be told "done" early — the customer's next act may be to hand the
+// vehicle to someone else.
+//
+// The acting member is a query parameter rather than a body. A DELETE with a
+// body is legal and widely mishandled; the wallet is one short opaque value,
+// which is what a query string is for.
+func (c *SharingController) RevokeShare(ctx *fiber.Ctx) error {
+	tenantID := ctx.Params("tenantId")
+
+	tokenID, err := strconv.ParseInt(ctx.Params("tokenId"), 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "tokenId must be a number")
+	}
+	if err := c.assertScope(ctx, tenantID, "revoke vehicle share"); err != nil {
+		return err
+	}
+
+	// The owner-equality half of ValidateGrantee is deliberately not applied
+	// here, so the zero address and malformed input are checked directly. A
+	// grant to the owner cannot exist — ShareVehicle refuses to create one, and
+	// SACD grants the owner everything regardless of any record — so refusing
+	// to revoke one would only block a caller from tidying a record that
+	// predates this service.
+	grantee := ctx.Params("grantee")
+	if !common.IsHexAddress(grantee) {
+		return fiber.NewError(fiber.StatusBadRequest, "grantee must be a wallet address")
+	}
+	if common.HexToAddress(grantee) == (common.Address{}) {
+		return fiber.NewError(fiber.StatusBadRequest, "grantee must not be the zero address")
+	}
+
+	wallet := ctx.Query("wallet")
+	if err := c.assertCapability(ctx, tenantID, wallet); err != nil {
+		return err
+	}
+
+	// The same authorization chain as a share, and for the same reason the
+	// worker re-runs it: this writes to the vehicle's SACD record with the
+	// tenant's signer on the owner's kernel, and standing to do that does not
+	// depend on which direction the write goes.
+	if _, _, err := c.shares.AuthorizeShare(ctx.Context(), tenantID, tokenID); err != nil {
+		return c.shareAuthError(ctx, tenantID, tokenID, err)
+	}
+
+	jobID, err := c.queue.EnqueueRevoke(ctx.Context(), sharing.RevokeArgs{
+		TenantID:    tenantID,
+		TokenID:     tokenID,
+		Grantee:     common.HexToAddress(grantee).Hex(),
+		ActorWallet: wallet,
+	})
+	if err != nil {
+		if errors.Is(err, sharing.ErrQueueUnavailable) {
+			return fiber.NewError(fiber.StatusServiceUnavailable,
+				"vehicle sharing is not available in this environment")
+		}
+		c.logger.Err(err).Str("tenant_id", tenantID).Int64("token_id", tokenID).
+			Msg("enqueue revoke")
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to queue the revocation")
 	}
 
 	return ctx.Status(fiber.StatusAccepted).JSON(models.ShareVehicleResult{JobID: jobID})

@@ -199,6 +199,13 @@ func shareWorkers(ctx context.Context, logger *zerolog.Logger, settings *config.
 	if err := river.AddWorkerSafely(workers, sharing.NewShareWorker(logger, settings, authorizer, fleetClient)); err != nil {
 		logger.Fatal().Err(err).Msg("failed to register the vehicle-share worker")
 	}
+	// Revocation is its own worker on the same queue and the same authorizer.
+	// It writes a zeroed SACD record where the share worker writes a granting
+	// one, and it is separate so "who un-shared this vehicle" is a job kind you
+	// can select on rather than a field you have to remember to filter.
+	if err := river.AddWorkerSafely(workers, sharing.NewRevokeWorker(logger, settings, authorizer, fleetClient)); err != nil {
+		logger.Fatal().Err(err).Msg("failed to register the vehicle-share revoke worker")
+	}
 	// The typed shared-operations worker (plan 06 step 3) shares the queue,
 	// the fleet client and the authorizer with the share worker — its extra
 	// dependency is the signer gate, which the chained post-transfer re-share
