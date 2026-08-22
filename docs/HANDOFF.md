@@ -3615,7 +3615,9 @@ now run for real, once, successfully.
 
 Open, and now worth attention for the first time:
 
-1. ~~**Nothing has revoked a share.**~~ **BUILT, PR open, not yet deployed.**
+1. ~~**Nothing has revoked a share.**~~ **SHIPPED — this service `v0.27.0`
+   (image `6f4ab1a`, rolled out and verified via `/version`), fleet-lite
+   `v0.26.0` (#148 revoke UI + #147 token id in the modal header).**
    `DELETE /v1/tenants/{id}/vehicles/{tokenId}/share/{grantee}?wallet=` — 202
    and a job id, polled through the *existing* share status route. Note
    `DELETE /v1/tenants/{id}/vehicles/{tokenId}` remains entitlement
@@ -3638,9 +3640,13 @@ not, and why load through `fleets.dimo.co` is not a valid test.
 
 ### Next actions
 
-1. **Ship the revoke path and exercise it once**, the way the share was
-   exercised. Deploy order is the usual one — **this service first**, because
-   an unrecognised route is a 404 and fleet-lite treats that as a failure.
+1. **Exercise the revoke path once**, the way the share was exercised. Both
+   halves are deployed (this service first, as required — an unrecognised
+   route is a 404 that fleet-lite's `upstreamError` passes through as
+   `404 "vehicle not found"`, so a valid vehicle would report as
+   nonexistent). **Nothing has been revoked on chain yet.** The live share to
+   revoke, if you want a real target, is token `187963` → grantee
+   `0x6272d24fa6aba09483Bd95E382E6E6272198900d`, expiring 2027-08-22.
    Three things to know before the first real revocation:
    - It writes a **zeroed** SACD record (`permissions=0`, `expiration=0`); it
      does not delete anything. identity-api may therefore keep returning that
@@ -3652,7 +3658,21 @@ not, and why load through `fleets.dimo.co` is not a valid test.
      timed-out receipt poll and the retry firing.
    - `revoke UserOp returned no receipt` means **unknown**, and here the stake
      is inverted from a share's — the customer believes access is gone when it
-     may not be.
+     may not be. fleet-lite shows that case as a neutral banner, neither
+     success nor failure.
+   - **Revocation is not an instant cut-off.** Token Exchange mints 10-minute
+     Vehicle JWTs and downstream services trust those claims without
+     re-checking the chain, so an already-minted token stays usable for up to
+     ten minutes after the record is zeroed. Fine for "I changed my mind";
+     not what to reach for if a grantee is actively hostile.
+
+   One thing fixed on the way that was a pre-existing bug of its own:
+   fleet-lite's "Already shared with" list never filtered expired grants, so
+   it has been showing dead shares all along. It filters now — which revoke
+   *depends* on, since a zeroed record still comes back from identity-api.
+   A grant with a missing or unparseable `expiresAt` is deliberately kept:
+   `formatExpiry` reads that as "no expiry", and hiding a live indefinite
+   grant over a malformed field is the worse failure.
 2. **Run `warm-shared-accounts` after onboarding any fleet** — unchanged.
 3. **Plan 06 step 4** — unchanged, and the timeout decision is still the
    blocker. Widening kaufmann's transfer worker
