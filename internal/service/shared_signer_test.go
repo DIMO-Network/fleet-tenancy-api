@@ -5,9 +5,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/gateway"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/models"
+	"github.com/lib/pq"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +33,21 @@ func signerFixture(t *testing.T, accounts *fakeAccounts, signer string) *SharedS
 		minted:    &models.MintedToken{Token: "jwt", ClientID: "0xclient"},
 		effective: &EffectiveCredential{TenantID: "t1", ClientID: "0xclient", SignerAddress: signer},
 	}
-	return NewSharedSignerService(&logger, accounts, creds)
+	// The store is durable now, so each test must start from "nothing is
+	// known" — otherwise an earlier test's learned answer silently satisfies a
+	// later one and the accounts-api behaviour under test is never exercised.
+	store := testStore(t)
+	clear := func() {
+		// lower() on both sides: rows are stored EIP-55 checksummed, so an
+		// exact match against a differently-cased constant silently deletes
+		// nothing and the next test inherits this one's answer.
+		_, _ = store.DBS().Writer.Exec(
+			`DELETE FROM shared_accounts WHERE lower(wallet) = ANY($1)`,
+			pq.Array([]string{strings.ToLower(ownerWallet), strings.ToLower(tenantSigner), strings.ToLower(otherSigner)}))
+	}
+	clear()
+	t.Cleanup(clear)
+	return NewSharedSignerService(&logger, accounts, creds, NewSharedAccountStore(store))
 }
 
 // The happy path: the owner's kernel registered this tenant's signer, so the
@@ -121,7 +137,7 @@ func TestFilterSignable(t *testing.T) {
 	}}
 	svc := signerFixture(t, accounts, tenantSigner)
 
-	got, err := svc.FilterSignable(context.Background(), "t1",
+	got, _, err := svc.FilterSignable(context.Background(), "t1",
 		[]string{lower(ownerWallet), otherSigner, "not-an-address", ""})
 	require.NoError(t, err)
 	assert.Equal(t, []string{ownerWallet}, got,
@@ -141,7 +157,7 @@ func TestFilterSignable_DeduplicatesBeforeCallingUpstream(t *testing.T) {
 	for i := range owners {
 		owners[i] = ownerWallet
 	}
-	got, err := svc.FilterSignable(context.Background(), "t1", owners)
+	got, _, err := svc.FilterSignable(context.Background(), "t1", owners)
 	require.NoError(t, err)
 	assert.Equal(t, []string{ownerWallet}, got, "one distinct owner, one entry")
 }
@@ -156,7 +172,7 @@ func TestFilterSignable_CachesWithinTTL(t *testing.T) {
 	svc.accounts = accounts
 
 	for i := 0; i < 3; i++ {
-		_, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
+		_, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
 		require.NoError(t, err)
 	}
 	assert.Equal(t, 1, accounts.calls, "the answer should be cached across calls")
@@ -168,7 +184,7 @@ func TestFilterSignable_CachesWithinTTL(t *testing.T) {
 func TestFilterSignable_UpstreamFailureFailsTheCall(t *testing.T) {
 	svc := signerFixture(t, &fakeAccounts{byWalletErr: errors.New("boom")}, tenantSigner)
 
-	_, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
+	_, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
 	assert.Error(t, err, "a degraded answer would look like the feature being switched off")
 }
 
@@ -187,4 +203,138 @@ func (c *countingAccounts) CreateAccount(e, s, j string) (*gateway.Account, erro
 func (c *countingAccounts) GetAccountByWallet(w, j string) (*gateway.Account, error) {
 	c.calls++
 	return c.inner.GetAccountByWallet(w, j)
+}
+
+// ---- the durable store (2026-08-22) ----
+
+// THE POINT OF THE WHOLE CHANGE. A learned answer survives the process, so the
+// second render asks accounts-api nothing. Before this, a 600-vehicle operator
+// with hundreds of distinct owners paid one sequential HTTP call per owner on
+// EVERY page load — 45 seconds against a caller that gives up at 5.
+func TestFilterSignable_LearnedAnswerSurvivesANewService(t *testing.T) {
+	accounts := &countingAccounts{inner: &fakeAccounts{byWallet: map[string]*gateway.Account{
+		lower(ownerWallet): {WalletAddress: ownerWallet, ProvidedSignerAddress: tenantSigner},
+	}}}
+	svc := signerFixture(t, accounts.fake(), tenantSigner)
+	svc.accounts = accounts
+
+	got, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
+	require.NoError(t, err)
+	require.Equal(t, []string{ownerWallet}, got)
+	require.Equal(t, 1, accounts.calls)
+
+	// A different service instance — a restart, or the other replica.
+	logger := zerolog.Nop()
+	creds := &fakeCreds{
+		minted:    &models.MintedToken{Token: "jwt", ClientID: "0xclient"},
+		effective: &EffectiveCredential{TenantID: "t1", ClientID: "0xclient", SignerAddress: tenantSigner},
+	}
+	fresh := NewSharedSignerService(&logger, accounts, creds, NewSharedAccountStore(testStore(t)))
+
+	got, _, err = fresh.FilterSignable(context.Background(), "t1", []string{ownerWallet})
+	require.NoError(t, err)
+	assert.Equal(t, []string{ownerWallet}, got)
+	assert.Equal(t, 1, accounts.calls, "a restart must not re-ask what is already known")
+}
+
+// A positive is permanent because providedSignerAddress cannot be revoked
+// (docs/signer-permanence.md). This is the property that makes storing it
+// different from caching it — and if accounts-api ever grows a revoke, this
+// test is the one that must be revisited, not quietly deleted.
+func TestSharedAccountRecord_PositiveNeverGoesStale(t *testing.T) {
+	rec := SharedAccountRecord{SignerAddress: tenantSigner, CheckedAt: time.Now().Add(-3650 * 24 * time.Hour)}
+	assert.True(t, rec.Fresh(time.Now()), "a registered signer cannot be revoked, so age is irrelevant")
+}
+
+// A negative is NOT the mirror image: a wallet with no shared account today can
+// register one tomorrow. Freezing it would permanently hide sharing from anyone
+// looked up shortly before their account existed.
+func TestSharedAccountRecord_NegativeAgesOut(t *testing.T) {
+	now := time.Now()
+	assert.True(t, SharedAccountRecord{CheckedAt: now.Add(-time.Hour)}.Fresh(now),
+		"a recent negative is still believed")
+	assert.False(t, SharedAccountRecord{CheckedAt: now.Add(-negativeRecheckAfter - time.Minute)}.Fresh(now),
+		"an old negative must be asked again — accounts can be created")
+}
+
+// A negative arriving after a positive is always the older truth, since nothing
+// unregisters a signer. Two concurrent renders must not be able to land in an
+// order that erases what is known, so the guard is in the SQL rather than in Go.
+func TestSharedAccountStore_NegativeNeverErasesAPositive(t *testing.T) {
+	store := NewSharedAccountStore(testStore(t))
+	ctx := context.Background()
+	defer func() {
+		_, _ = store.pdb.DBS().Writer.Exec(`DELETE FROM shared_accounts WHERE wallet = $1`, ownerWallet)
+	}()
+
+	require.NoError(t, store.Record(ctx, ownerWallet, tenantSigner))
+	require.NoError(t, store.Record(ctx, ownerWallet, ""))
+
+	got, err := store.Lookup(ctx, []string{ownerWallet})
+	require.NoError(t, err)
+	assert.Equal(t, tenantSigner, got[ownerWallet].SignerAddress,
+		"a later 'no account' must not erase a signer that cannot have been revoked")
+}
+
+// "Asked, and this wallet has none" is worth remembering — it is the answer for
+// most vehicle owners, and re-asking it per render is exactly the cost this
+// change removes.
+func TestFilterSignable_RemembersNegatives(t *testing.T) {
+	accounts := &countingAccounts{inner: &fakeAccounts{byWallet: map[string]*gateway.Account{}}}
+	svc := signerFixture(t, accounts.fake(), tenantSigner)
+	svc.accounts = accounts
+
+	for i := 0; i < 3; i++ {
+		got, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	}
+	assert.Equal(t, 1, accounts.calls, "an unshareable owner is asked about once, not once per render")
+}
+
+// The credential is resolved once per call, not once per owner. It was per
+// owner before, which multiplied a cold render's cost by the credential path on
+// top of the accounts-api call.
+func TestFilterSignable_ResolvesTheCredentialOncePerCall(t *testing.T) {
+	accounts := &fakeAccounts{byWallet: map[string]*gateway.Account{}}
+	logger := zerolog.Nop()
+	creds := &countingCreds{inner: &fakeCreds{
+		minted:    &models.MintedToken{Token: "jwt", ClientID: "0xclient"},
+		effective: &EffectiveCredential{TenantID: "t1", ClientID: "0xclient", SignerAddress: tenantSigner},
+	}}
+	store := testStore(t)
+	owners := []string{
+		"0x1111111111111111111111111111111111110001",
+		"0x1111111111111111111111111111111111110002",
+		"0x1111111111111111111111111111111111110003",
+	}
+	_, _ = store.DBS().Writer.Exec(`DELETE FROM shared_accounts WHERE wallet = ANY($1)`,
+		"{"+strings.Join(owners, ",")+"}")
+	t.Cleanup(func() {
+		_, _ = store.DBS().Writer.Exec(`DELETE FROM shared_accounts WHERE wallet = ANY($1)`,
+			"{"+strings.Join(owners, ",")+"}")
+	})
+
+	svc := NewSharedSignerService(&logger, accounts, creds, NewSharedAccountStore(store))
+	_, _, err := svc.FilterSignable(context.Background(), "t1", owners)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, creds.effectiveCalls, "one effective-credential resolution for the whole fleet")
+	assert.Equal(t, 1, creds.mintCalls, "one minted JWT for the whole batch")
+}
+
+type countingCreds struct {
+	inner          *fakeCreds
+	effectiveCalls int
+	mintCalls      int
+}
+
+func (c *countingCreds) Effective(ctx context.Context, tenantID string) (*EffectiveCredential, error) {
+	c.effectiveCalls++
+	return c.inner.Effective(ctx, tenantID)
+}
+
+func (c *countingCreds) DeveloperJWT(ctx context.Context, tenantID string) (*models.MintedToken, error) {
+	c.mintCalls++
+	return c.inner.DeveloperJWT(ctx, tenantID)
 }

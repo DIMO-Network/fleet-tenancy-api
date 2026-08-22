@@ -188,7 +188,8 @@ func shareWorkers(ctx context.Context, logger *zerolog.Logger, settings *config.
 	credSvc := service.NewCredentialService(logger, pdb, settings,
 		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint))
 	signerSvc := service.NewSharedSignerService(logger,
-		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint), credSvc)
+		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint), credSvc,
+		service.NewSharedAccountStore(pdb))
 	authorizer := service.NewShareAuthorizer(logger, pdb,
 		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint),
 		signerSvc, credSvc, settings)

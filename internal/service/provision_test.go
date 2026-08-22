@@ -72,6 +72,7 @@ func provisionFixture(t *testing.T, creds *fakeCreds, accounts *fakeAccounts) (*
 		w := store.DBS().Writer
 		_, _ = w.Exec(`DELETE FROM memberships WHERE wallet = $1`, provisionedWallet)
 		_, _ = w.Exec(`DELETE FROM users WHERE wallet = $1`, provisionedWallet)
+		_, _ = w.Exec(`DELETE FROM shared_accounts WHERE lower(wallet) = lower($1)`, provisionedWallet)
 	})
 
 	return NewProvisionService(&l, store, NewMemberService(&l, store), creds, accounts),
@@ -130,10 +131,13 @@ func TestProvision(t *testing.T) {
 		require.Equal(t, []string{"new@example.com", cred.SignerAddress, token.Token}, accounts.createArgs,
 			"created under the effective credential's signer and JWT")
 
-		// The signer registered on the account is recorded on the user.
+		// The signer registered on the account is remembered in
+		// shared_accounts, so the signer gate never asks accounts-api about
+		// this wallet — an account this service just created is the one case
+		// where the answer is certain at write time.
 		var signer string
 		err = svc.pdb.DBS().Reader.QueryRow(
-			`SELECT COALESCE(shared_account_signer_address,'') FROM users WHERE wallet=$1`,
+			`SELECT COALESCE(signer_address,'') FROM shared_accounts WHERE wallet=$1`,
 			provisionedWallet).Scan(&signer)
 		require.NoError(t, err)
 		assert.Equal(t, cred.SignerAddress, signer)
