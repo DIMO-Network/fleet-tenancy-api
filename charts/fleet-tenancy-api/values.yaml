@@ -2,7 +2,7 @@ replicaCount: 1
 image:
   repository: dimozone/fleet-tenancy-api
   pullPolicy: IfNotPresent
-  tag: a009745
+  tag: dac091f
 imagePullSecrets: []
 nameOverride: ''
 fullnameOverride: ''
