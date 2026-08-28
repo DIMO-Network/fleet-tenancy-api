@@ -85,7 +85,11 @@ func TestBuildSACDDocument_OmitsAgreementsWhenNotSharingDocuments(t *testing.T) 
 // The envelope is the SDK's, and consumers read these names exactly.
 func TestBuildSACDDocument_MatchesSDKEnvelope(t *testing.T) {
 	out := buildTestDoc(t, true)
-	assert.Equal(t, "1.0", out["specVersion"])
+	// Lower case, per the SACD spec and cloudevent.RawEvent's struct tag —
+	// not the SDK's `specVersion`.
+	assert.Equal(t, "1.0", out["specversion"])
+	_, camel := out["specVersion"]
+	assert.False(t, camel, "specVersion (camelCase) does not deserialize into cloudevent.RawEvent")
 	assert.Equal(t, "dimo.sacd", out["type"])
 	assert.Equal(t, "sacd/v1.0", out["dataversion"])
 
@@ -145,7 +149,7 @@ func TestSigningPayload_IsTheDataObjectOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	// The envelope must not be in the signed bytes.
-	assert.NotContains(t, string(payload), `"specVersion"`)
+	assert.NotContains(t, string(payload), `"specversion"`)
 	assert.NotContains(t, string(payload), `"dimo.sacd"`)
 	assert.NotContains(t, string(payload), `"signature"`)
 

@@ -95,7 +95,13 @@ type sacdData struct {
 // SACDDocument is the uploaded artifact. Field order matters only for
 // readability; consumers read by name.
 type SACDDocument struct {
-	SpecVersion string   `json:"specVersion"`
+	// `specversion`, lower case. The DIMO SACD spec and its examples use that
+	// casing, and cloudevent.RawEvent — the struct every Go reader unmarshals
+	// these documents into — tags it `json:"specversion"`. The TS SDK emits
+	// `specVersion`, which silently leaves the field empty on the read side.
+	// Nothing checks it today; matching the spec costs nothing and removes a
+	// trap for whoever starts checking.
+	SpecVersion string   `json:"specversion"`
 	Time        string   `json:"time"`
 	Type        string   `json:"type"`
 	DataVersion string   `json:"dataversion"`
