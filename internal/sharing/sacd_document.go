@@ -193,17 +193,27 @@ func BuildSACDDocument(
 //
 // This deliberately differs from @dimo-network/transactions, whose
 // signSACDPermissionTemplate signs JSON.stringify of the WHOLE template
-// (verified in fleet-pairing's installed v0.3.2). A signature over the whole
-// template cannot validate against `record.Data`, so SDK-produced documents
-// appear to fail this check — which would mean SDK-based shares grant
-// telemetry but not documents. Follow the verifier, not the producer.
+// (fleet-pairing's installed v0.3.2). That signature cannot validate against
+// `record.Data` — but it does not follow that SDK-based sharing is broken,
+// and it is worth being clear why, because the obvious conclusion is wrong.
 //
-// Getting this wrong is survivable in one direction only. ValidateAccess falls
-// back to the on-chain bitmask when the source doc is unusable, so a bad
-// signature costs document access and nothing else — EXCEPT for requests
-// carrying EventFilters, which return the source-doc error outright
-// (services/access/access.go). Those are exactly the document requests this
-// change exists to make work.
+// The mobile glovebox never reaches this check. dimo-app-backend evaluates a
+// grantee's document authority itself, in resolveDocAccess: it fetches the
+// source document, verifies its CID, and reads the cloudevent agreements. It
+// does not look at `signature` at all. The document bytes then come back
+// through the backend's own dev-license JWT, whose token exchange asks for
+// privileges and sends no EventFilters — so token-exchange takes its
+// bitmask fallback and the source doc is never the deciding factor.
+//
+// The signature only decides anything for a request carrying EventFilters,
+// which returns the source-doc error with no fallback
+// (services/access/access.go). Signing `data` satisfies that path as well as
+// the mobile one, so it is a superset of what the SDK produces rather than a
+// disagreement with it.
+//
+// What actually fixes the reported bug is the agreements existing at all —
+// the source used to be empty. The signing details below are what make the
+// same document also work for a direct EventFilters consumer.
 func (d SACDDocument) SigningPayload() ([]byte, error) {
 	return json.Marshal(d.Data)
 }
