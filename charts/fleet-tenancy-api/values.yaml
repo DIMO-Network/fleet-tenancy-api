@@ -2,7 +2,7 @@ replicaCount: 1
 image:
   repository: dimozone/fleet-tenancy-api
   pullPolicy: IfNotPresent
-  tag: e4e0f12
+  tag: 05d032c
 imagePullSecrets: []
 nameOverride: ''
 fullnameOverride: ''
@@ -41,7 +41,7 @@ env:
   ATTEST_API_URL: https://attest.dimo.zone
   CHAIN_ID: '137'
   SACD_ADDRESS: '0x3c152B5d96769661008Ff404224d6530FCAC766d'
-  SACD_UPLOAD_URL: 'https://assets.dimo.org/ipfs'
+  SACD_UPLOAD_URL: https://assets.dimo.org/ipfs
   SYNTHETIC_NFT_ADDRESS: '0x4804e8D1661cd1a1e5dDdE1ff458A7f878c0aC6D'
 ingress:
   enabled: false
