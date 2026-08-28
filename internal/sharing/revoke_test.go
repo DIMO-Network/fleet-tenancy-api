@@ -57,7 +57,7 @@ func TestRevokeWorker_WritesZeroedPermissionsAndExpiration(t *testing.T) {
 	want, err := BuildSetPermissionsCall(
 		common.HexToAddress("0x3c152B5d96769661008Ff404224d6530FCAC766d"),
 		common.HexToAddress("0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF"),
-		42, testGrantee, big.NewInt(0), big.NewInt(0))
+		42, testGrantee, big.NewInt(0), big.NewInt(0), "")
 	require.NoError(t, err)
 	assert.Equal(t, want.Data, fleet.msg.Data,
 		"a revocation is setPermissions with a zero mask and a zero expiration")
@@ -80,7 +80,7 @@ func TestRevokeWorker_DoesNotSendAGrantingMask(t *testing.T) {
 		granting, err := BuildSetPermissionsCall(
 			common.HexToAddress("0x3c152B5d96769661008Ff404224d6530FCAC766d"),
 			common.HexToAddress("0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF"),
-			42, testGrantee, mask, ExpirationFrom(time.Now(), 365*24*time.Hour))
+			42, testGrantee, mask, ExpirationFrom(time.Now(), 365*24*time.Hour), "")
 		require.NoError(t, err)
 		assert.NotEqual(t, granting.Data, fleet.msg.Data,
 			"a revocation must not send the %s mask — that would re-grant the share", name)

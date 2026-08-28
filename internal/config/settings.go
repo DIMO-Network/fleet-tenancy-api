@@ -88,7 +88,13 @@ type Settings struct {
 	// It joins the all-or-nothing set below because its absence is the
 	// dangerous kind: half-configured, a synthetic-device burn would be aimed
 	// at the zero address.
-	SacdAddress         string  `yaml:"SACD_ADDRESS"`
+	SacdAddress string `yaml:"SACD_ADDRESS"`
+	// SacdUploadURL pins a share's SACD document and answers with its CID; the
+	// grant records `ipfs://<cid>` as its source. Without a document a grantee
+	// gets telemetry but no glovebox — dimo-app-backend reads the cloudevent
+	// agreements from this document, and permission bits do not substitute.
+	// Empty disables publishing and shares degrade to that older behaviour.
+	SacdUploadURL       string  `yaml:"SACD_UPLOAD_URL"`
 	SyntheticNftAddress string  `yaml:"SYNTHETIC_NFT_ADDRESS"`
 	RPCURL              url.URL `yaml:"RPC_URL"`     // secret
 	BundlerURL          url.URL `yaml:"BUNDLER_URL"` // secret

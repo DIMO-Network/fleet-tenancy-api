@@ -31,11 +31,15 @@ func BuildSetPermissionsCall(
 	tokenID int64,
 	grantee common.Address,
 	permissions, expiration *big.Int,
+	source string,
 ) (*ethereum.CallMsg, error) {
-	// The trailing "" is SACD's `source`, a free-text provenance field. The
-	// onboarding mint and kaufmann's re-share both leave it empty.
+	// `source` points at the SACD document describing this grant. Empty is
+	// valid on chain and grants telemetry fine, but a grantee gets no document
+	// access without one: dimo-app-backend reads the cloudevent agreements out
+	// of the document at this URI, and no URI means no agreements means no
+	// glovebox. See sacd_document.go.
 	callData, err := sacd.NewSacd().TryPackSetPermissions0(
-		vehicleNft, big.NewInt(tokenID), grantee, permissions, expiration, "")
+		vehicleNft, big.NewInt(tokenID), grantee, permissions, expiration, source)
 	if err != nil {
 		return nil, fmt.Errorf("pack setPermissions0: %w", err)
 	}

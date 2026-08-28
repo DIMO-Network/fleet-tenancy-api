@@ -204,7 +204,7 @@ func TestShareWorker_ExpirationUsesRunTime(t *testing.T) {
 			want, err := BuildSetPermissionsCall(
 				common.HexToAddress("0x3c152B5d96769661008Ff404224d6530FCAC766d"),
 				common.HexToAddress("0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF"),
-				42, testGrantee, DefaultPermissions(), tc.want)
+				42, testGrantee, DefaultPermissions(), tc.want, "")
 			require.NoError(t, err)
 			assert.Equal(t, want.Data, fleet.msg.Data)
 		})
@@ -224,7 +224,7 @@ func TestShareWorker_UsesDefaultPermissionsNotFull(t *testing.T) {
 		common.HexToAddress("0x3c152B5d96769661008Ff404224d6530FCAC766d"),
 		common.HexToAddress("0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF"),
 		42, testGrantee, FullPermissions(),
-		ExpirationFrom(time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC), 365*24*time.Hour))
+		ExpirationFrom(time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC), 365*24*time.Hour), "")
 	require.NoError(t, err)
 	assert.NotEqual(t, full.Data, fleet.msg.Data,
 		"a customer share is the default mask, never the full one")

@@ -21,7 +21,7 @@ var (
 // read as a permissions problem rather than a configuration one.
 func TestBuildSetPermissionsCall_TargetsSacdWithNftAsAsset(t *testing.T) {
 	msg, err := BuildSetPermissionsCall(sacdContract, vehicleNFT, 42, granteeAddr,
-		DefaultPermissions(), big.NewInt(1800000000))
+		DefaultPermissions(), big.NewInt(1800000000), "")
 	require.NoError(t, err)
 
 	require.NotNil(t, msg.To)
@@ -41,35 +41,35 @@ func TestBuildSetPermissionsCall_TargetsSacdWithNftAsAsset(t *testing.T) {
 // grant a share to the wrong wallet or on the wrong vehicle.
 func TestBuildSetPermissionsCall_EveryArgumentReachesTheCalldata(t *testing.T) {
 	base, err := BuildSetPermissionsCall(sacdContract, vehicleNFT, 42, granteeAddr,
-		DefaultPermissions(), big.NewInt(1800000000))
+		DefaultPermissions(), big.NewInt(1800000000), "")
 	require.NoError(t, err)
 
 	for name, build := range map[string]func() ([]byte, error){
 		"a different token id": func() ([]byte, error) {
 			m, e := BuildSetPermissionsCall(sacdContract, vehicleNFT, 43, granteeAddr,
-				DefaultPermissions(), big.NewInt(1800000000))
+				DefaultPermissions(), big.NewInt(1800000000), "")
 			return m.Data, e
 		},
 		"a different grantee": func() ([]byte, error) {
 			other := common.HexToAddress("0x2222222222222222222222222222222222222222")
 			m, e := BuildSetPermissionsCall(sacdContract, vehicleNFT, 42, other,
-				DefaultPermissions(), big.NewInt(1800000000))
+				DefaultPermissions(), big.NewInt(1800000000), "")
 			return m.Data, e
 		},
 		"different permissions": func() ([]byte, error) {
 			m, e := BuildSetPermissionsCall(sacdContract, vehicleNFT, 42, granteeAddr,
-				FullPermissions(), big.NewInt(1800000000))
+				FullPermissions(), big.NewInt(1800000000), "")
 			return m.Data, e
 		},
 		"a different expiration": func() ([]byte, error) {
 			m, e := BuildSetPermissionsCall(sacdContract, vehicleNFT, 42, granteeAddr,
-				DefaultPermissions(), big.NewInt(1900000000))
+				DefaultPermissions(), big.NewInt(1900000000), "")
 			return m.Data, e
 		},
 		"a different asset": func() ([]byte, error) {
 			other := common.HexToAddress("0x3333333333333333333333333333333333333333")
 			m, e := BuildSetPermissionsCall(sacdContract, other, 42, granteeAddr,
-				DefaultPermissions(), big.NewInt(1800000000))
+				DefaultPermissions(), big.NewInt(1800000000), "")
 			return m.Data, e
 		},
 	} {
@@ -85,10 +85,10 @@ func TestBuildSetPermissionsCall_EveryArgumentReachesTheCalldata(t *testing.T) {
 // not drift with the permission set or anything else about the arguments.
 func TestBuildSetPermissionsCall_SelectorIsStable(t *testing.T) {
 	a, err := BuildSetPermissionsCall(sacdContract, vehicleNFT, 1, granteeAddr,
-		DefaultPermissions(), big.NewInt(1))
+		DefaultPermissions(), big.NewInt(1), "")
 	require.NoError(t, err)
 	b, err := BuildSetPermissionsCall(sacdContract, vehicleNFT, 999, granteeAddr,
-		FullPermissions(), big.NewInt(2))
+		FullPermissions(), big.NewInt(2), "")
 	require.NoError(t, err)
 
 	require.GreaterOrEqual(t, len(a.Data), 4)

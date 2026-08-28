@@ -60,7 +60,14 @@ func Permissions(granted ...Permission) *big.Int {
 // v1 exposes no permission picker, so every share made through this service
 // carries exactly this mask.
 func DefaultPermissions() *big.Int {
-	return Permissions(
+	return Permissions(defaultPermissionList()...)
+}
+
+// defaultPermissionList is DefaultPermissions before packing. The SACD
+// document names each permission individually, so both forms are needed and
+// they must not drift — hence one list feeding both.
+func defaultPermissionList() []Permission {
+	return []Permission{
 		NonLocationTelemetry,
 		Commands,
 		CurrentLocation,
@@ -68,7 +75,7 @@ func DefaultPermissions() *big.Int {
 		Credentials,
 		Streams,
 		RawData,
-	)
+	}
 }
 
 // FullPermissions grants every permission, including APPROXIMATE_LOCATION.
