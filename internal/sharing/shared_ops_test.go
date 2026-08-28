@@ -199,7 +199,7 @@ func TestSharedOpWorker_TransferChainsReShareOnNewOwnersKernel(t *testing.T) {
 	require.NotNil(t, reshare.msg.To)
 	assert.Equal(t, opSacdAddr, *reshare.msg.To, "the grant is aimed at the SACD contract")
 	wantGrant, err := BuildSetPermissionsCall(opSacdAddr, opVehicleNft, 42, opClientID,
-		FullPermissions(), ExpirationFrom(opRunTime, 0))
+		FullPermissions(), ExpirationFrom(opRunTime, 0), "")
 	require.NoError(t, err)
 	assert.Equal(t, wantGrant.Data, reshare.msg.Data,
 		"the tenant re-acquires FULL permissions indefinitely, matching kaufmann's shareWithTenant")
@@ -342,7 +342,7 @@ func TestSharedOpWorker_GrantSacd(t *testing.T) {
 		require.NotNil(t, call.msg.To)
 		assert.Equal(t, opSacdAddr, *call.msg.To)
 		want, err := BuildSetPermissionsCall(opSacdAddr, opVehicleNft, 42, opClientID,
-			FullPermissions(), ExpirationFrom(opRunTime, 0))
+			FullPermissions(), ExpirationFrom(opRunTime, 0), "")
 		require.NoError(t, err)
 		assert.Equal(t, want.Data, call.msg.Data)
 	})

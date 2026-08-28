@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
+	"math/big"
+	"sync"
 	"time"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
 	zerodev "github.com/DIMO-Network/go-zerodev"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/riverqueue/river"
 	"github.com/rs/zerolog"
 )
@@ -79,6 +82,28 @@ type ShareWorker struct {
 	authorizer Authorizer
 	fleet      fleetCaller
 	now        func() time.Time
+
+	// rpc is used only to read the kernel's EIP-712 domain when signing a
+	// SACD document as the grantor. Dialled lazily and reused: shares are
+	// infrequent, and a dial per job would be wasteful for a value that never
+	// changes. nil until the first document is signed.
+	rpcMu  sync.Mutex
+	rpcCli *rpc.Client
+}
+
+// kernelRPC returns the shared RPC client, dialling on first use.
+func (w *ShareWorker) kernelRPC() (*rpc.Client, error) {
+	w.rpcMu.Lock()
+	defer w.rpcMu.Unlock()
+	if w.rpcCli != nil {
+		return w.rpcCli, nil
+	}
+	cli, err := rpc.Dial(w.settings.RPCURL.String())
+	if err != nil {
+		return nil, fmt.Errorf("dial RPC for kernel signing: %w", err)
+	}
+	w.rpcCli = cli
+	return cli, nil
 }
 
 func NewShareWorker(logger *zerolog.Logger, settings *config.Settings,
@@ -134,10 +159,21 @@ func (w *ShareWorker) Work(ctx context.Context, job *river.Job[ShareArgs]) error
 	}
 
 	expiration := ExpirationFrom(w.now(), time.Duration(args.DurationDays)*24*time.Hour)
+
+	// Publish the SACD document and point the grant at it. Without this the
+	// grantee gets telemetry and no documents — permission bits say nothing
+	// about the glovebox; the cloudevent agreements in this document do.
+	//
+	// Best-effort on purpose. A failed upload degrades to the empty source we
+	// shipped before, which is a share that works for everything except
+	// documents. Failing the whole job instead would turn an assets.dimo.org
+	// blip into "you cannot share your vehicle at all".
+	source := w.sacdSource(ctx, log, owner, grantee, args.TokenID, expiration, signerPK)
+
 	msg, err := BuildSetPermissionsCall(
 		common.HexToAddress(w.settings.SacdAddress),
 		common.HexToAddress(w.settings.VehicleNftAddress),
-		args.TokenID, grantee, DefaultPermissions(), expiration)
+		args.TokenID, grantee, DefaultPermissions(), expiration, source)
 	if err != nil {
 		return fmt.Errorf("build setPermissions call: %w", err)
 	}
@@ -163,4 +199,53 @@ func (w *ShareWorker) Work(ctx context.Context, job *river.Job[ShareArgs]) error
 	}
 	event.Msg("vehicle share granted on chain")
 	return nil
+}
+
+// sacdSource publishes the SACD document for a share and returns the
+// `ipfs://<cid>` URI to record on chain, or "" when it cannot.
+//
+// Every failure path returns "" rather than an error. That is the pre-existing
+// behaviour — a share with no source — so the worst case is the share we shipped
+// yesterday, never a share that does not happen. Each failure is logged at warn
+// with the reason, because a silent slide back to "no documents" is exactly the
+// bug this method exists to fix.
+func (w *ShareWorker) sacdSource(
+	ctx context.Context,
+	log zerolog.Logger,
+	owner, grantee common.Address,
+	tokenID int64,
+	expiration *big.Int,
+	signerPK *ecdsa.PrivateKey,
+) string {
+	uploadURL := w.settings.SacdUploadURL
+	if uploadURL == "" {
+		log.Warn().Msg("no SACD upload URL configured; sharing without document access")
+		return ""
+	}
+
+	asset := VehicleAssetDID(w.settings.ChainID, common.HexToAddress(w.settings.VehicleNftAddress), tokenID)
+	doc := BuildSACDDocument(owner, grantee, asset, defaultPermissionList(), w.now(), expiration, true)
+
+	rpcCli, err := w.kernelRPC()
+	if err != nil {
+		log.Warn().Err(err).Msg("no RPC for kernel signing; sharing without document access")
+		return ""
+	}
+
+	// Signed as the owner's kernel — the grantor token-exchange verifies
+	// against — using the tenant's registered signer via ERC-1271.
+	signed, err := SignSACDDocument(ctx, rpcCli, doc, owner, signerPK)
+	if err != nil {
+		log.Warn().Err(err).Msg("could not sign SACD document; sharing without document access")
+		return ""
+	}
+
+	cid, err := UploadSACDDocument(ctx, uploadURL, signed)
+	if err != nil {
+		log.Warn().Err(err).Msg("could not upload SACD document; sharing without document access")
+		return ""
+	}
+
+	log.Info().Str("cid", cid).Str("asset", asset).Msg("SACD document published")
+	return SourceURI(cid)
 }

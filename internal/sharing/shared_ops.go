@@ -338,7 +338,10 @@ func (w *SharedOpWorker) buildTenantGrant(tokenID int64, grantee common.Address)
 	return BuildSetPermissionsCall(
 		common.HexToAddress(w.settings.SacdAddress),
 		common.HexToAddress(w.settings.VehicleNftAddress),
-		tokenID, grantee, FullPermissions(), ExpirationFrom(w.now(), 0))
+		// No source: this is the tenant re-acquiring its own operating access
+		// via its dev license, not a share to a person, so there is no
+		// grantee-facing document.
+		tokenID, grantee, FullPermissions(), ExpirationFrom(w.now(), 0), "")
 }
 
 // send submits one UserOp from the given kernel, signed by the tenant, and

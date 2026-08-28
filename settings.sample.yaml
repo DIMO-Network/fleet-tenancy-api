@@ -58,6 +58,13 @@ CHAIN_ID: 137
 # RPC_URL and BUNDLER_URL carry API keys; the bundler URL doubles as the
 # paymaster URL (ZeroDev serves both from one project URL).
 SACD_ADDRESS: ""
+
+# SACD_UPLOAD_URL pins a share's SACD document and returns its CID; the grant
+# records ipfs://<cid> as its source. A grantee's document access is decided
+# from the agreements inside that document — permission bits alone grant
+# telemetry and no glovebox. Leave empty to skip publishing; shares still work,
+# without document access.
+SACD_UPLOAD_URL: "https://assets.dimo.org/ipfs"
 SYNTHETIC_NFT_ADDRESS: ""
 RPC_URL: ""
 BUNDLER_URL: ""

@@ -123,7 +123,10 @@ func (w *RevokeWorker) Work(ctx context.Context, job *river.Job[RevokeArgs]) err
 	msg, err := BuildSetPermissionsCall(
 		common.HexToAddress(w.settings.SacdAddress),
 		common.HexToAddress(w.settings.VehicleNftAddress),
-		args.TokenID, grantee, NoPermissions(), RevokedExpiration())
+		// No source: a revocation grants nothing, so there is no document to
+		// point at. Leaving the previous grant's URI in place would advertise
+		// agreements that no longer hold.
+		args.TokenID, grantee, NoPermissions(), RevokedExpiration(), "")
 	if err != nil {
 		return fmt.Errorf("build setPermissions call: %w", err)
 	}
