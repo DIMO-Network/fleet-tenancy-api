@@ -78,7 +78,11 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// Self-serve creation and credential writes share the credential service
 	// so validation warms the exact minter the stored credential will use.
 	selfServeSvc := service.NewSelfServeService(logger, pdb, settings, tenantSvc, credSvc)
-	tenantsCtrl := controllers.NewTenantsController(logger, tenantSvc, selfServeSvc, CallerFrom)
+	// The AA wallet config surface (docs/plans/08-aa-owner-signing.md, step 1).
+	// Validation dials the sharing RPC per write — config writes are rare and a
+	// wrong wallet refused here is a burned gas-spending job avoided later.
+	aaWalletSvc := service.NewAAWalletService(logger, pdb, settings, service.EthChainDial(settings))
+	tenantsCtrl := controllers.NewTenantsController(logger, tenantSvc, selfServeSvc, aaWalletSvc, CallerFrom)
 	provisionSvc := service.NewProvisionService(logger, pdb, memberSvc, credSvc,
 		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint))
 	// The one email this service sends: "you've been given access", on
@@ -211,6 +215,12 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// graduation path — at which point effective-credential resolution stops
 	// falling through to its operator, with no other change anywhere.
 	v1.Put("/tenants/:tenantId/credentials", tenantsCtrl.SetCredentials)
+	// The AA wallet rides on the credential row and is written where the
+	// license lives; reads resolve effectively so a managed customer sees the
+	// wallet it will actually share with. The key goes in and never comes out.
+	v1.Put("/tenants/:tenantId/credentials/aa-wallet", tenantsCtrl.SetAAWallet)
+	v1.Get("/tenants/:tenantId/credentials/aa-wallet", tenantsCtrl.GetAAWallet)
+	v1.Delete("/tenants/:tenantId/credentials/aa-wallet", tenantsCtrl.ClearAAWallet)
 	v1.Get("/tenants/:tenantId/members", tenantsCtrl.ListMembers)
 
 	// Which vehicles a customer may see. This is the isolation boundary: under

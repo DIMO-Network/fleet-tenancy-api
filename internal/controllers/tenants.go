@@ -25,12 +25,15 @@ type TenantsController struct {
 	logger    *zerolog.Logger
 	tenants   *service.TenantService
 	selfserve *service.SelfServeService
+	aaWallet  *service.AAWalletService
 	caller    CallerResolver
 }
 
 func NewTenantsController(logger *zerolog.Logger, tenants *service.TenantService,
-	selfserve *service.SelfServeService, caller CallerResolver) *TenantsController {
-	return &TenantsController{logger: logger, tenants: tenants, selfserve: selfserve, caller: caller}
+	selfserve *service.SelfServeService, aaWallet *service.AAWalletService,
+	caller CallerResolver) *TenantsController {
+	return &TenantsController{logger: logger, tenants: tenants, selfserve: selfserve,
+		aaWallet: aaWallet, caller: caller}
 }
 
 // CreateSelfServeTenant — POST /v1/tenants
@@ -90,6 +93,71 @@ func (c *TenantsController) SetCredentials(ctx *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
 		return c.mapError(err, tenantID, "set credentials")
+	}
+	return ctx.SendStatus(fiber.StatusNoContent)
+}
+
+// SetAAWallet — PUT /v1/tenants/:tenantId/credentials/aa-wallet
+//
+// Write-only, like the API key: the request carries the root key, the response
+// never does. Strict validation lives in the service — a wrong key here is a
+// burned gas-spending job later (docs/plans/08-aa-owner-signing.md, D4).
+func (c *TenantsController) SetAAWallet(ctx *fiber.Ctx) error {
+	tenantID := ctx.Params("tenantId")
+	if err := c.assertScope(ctx, tenantID, "set AA wallet"); err != nil {
+		return err
+	}
+	var body models.SetAAWalletInput
+	if err := ctx.BodyParser(&body); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	status, err := c.aaWallet.Set(ctx.Context(), tenantID, &body)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrAAWalletInvalid):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		case errors.Is(err, service.ErrAANotCredentialHolder):
+			return fiber.NewError(fiber.StatusConflict, err.Error())
+		case errors.Is(err, service.ErrChainUnavailable):
+			// No verdict was reached — tell the caller to retry, not that the
+			// wallet is bad.
+			c.logger.Warn().Err(err).Str("tenant_id", tenantID).Msg("AA wallet verification unavailable")
+			return fiber.NewError(fiber.StatusServiceUnavailable, err.Error())
+		}
+		return c.mapError(err, tenantID, "set AA wallet")
+	}
+	return ctx.JSON(status)
+}
+
+// GetAAWallet — GET /v1/tenants/:tenantId/credentials/aa-wallet
+//
+// Answers the EFFECTIVE wallet — the subject's own or, for an operator-managed
+// customer, its operator's — with the holder named so a console can tell
+// configured-here from inherited. Never the key.
+func (c *TenantsController) GetAAWallet(ctx *fiber.Ctx) error {
+	tenantID := ctx.Params("tenantId")
+	if err := c.assertScope(ctx, tenantID, "get AA wallet"); err != nil {
+		return err
+	}
+	status, err := c.aaWallet.Get(ctx.Context(), tenantID)
+	if err != nil {
+		return c.mapError(err, tenantID, "get AA wallet")
+	}
+	return ctx.JSON(status)
+}
+
+// ClearAAWallet — DELETE /v1/tenants/:tenantId/credentials/aa-wallet
+//
+// Clears the subject's OWN wallet only — an inherited wallet is cleared where
+// it is configured, on the operator. Idempotent, so the console's retry story
+// is a plain repeat.
+func (c *TenantsController) ClearAAWallet(ctx *fiber.Ctx) error {
+	tenantID := ctx.Params("tenantId")
+	if err := c.assertScope(ctx, tenantID, "clear AA wallet"); err != nil {
+		return err
+	}
+	if err := c.aaWallet.Clear(ctx.Context(), tenantID); err != nil {
+		return c.mapError(err, tenantID, "clear AA wallet")
 	}
 	return ctx.SendStatus(fiber.StatusNoContent)
 }

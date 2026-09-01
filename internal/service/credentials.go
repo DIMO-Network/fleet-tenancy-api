@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -38,6 +39,10 @@ type EffectiveCredential struct {
 	TenantID      string
 	ClientID      string
 	SignerAddress string
+	// AAWalletAddress is the tenant's own Kernel smart account when one is
+	// configured (docs/plans/08-aa-owner-signing.md) — the wallet whose
+	// vehicles this credential can sign for in owner mode. Empty when none.
+	AAWalletAddress string
 }
 
 // CredentialService resolves effective credentials and mints developer JWTs
@@ -83,26 +88,29 @@ func NewCredentialService(logger *zerolog.Logger, pdb *db.Store, settings *confi
 // resolver's unique index use — so scope, resolution and minting can never
 // disagree about whose license a tenant is reached with.
 func (s *CredentialService) Effective(ctx context.Context, tenantID string) (*EffectiveCredential, error) {
-	cred, _, err := s.effectiveWithKey(ctx, tenantID)
+	cred, _, _, err := s.effectiveWithKey(ctx, tenantID)
 	return cred, err
 }
 
-// effectiveWithKey additionally returns the encrypted private key, for the
-// minter only. Decryption happens as late as possible, in DeveloperJWT.
-func (s *CredentialService) effectiveWithKey(ctx context.Context, tenantID string) (*EffectiveCredential, string, error) {
+// effectiveWithKey additionally returns the encrypted API key and the
+// encrypted AA wallet root key. Decryption happens as late as possible — in
+// DeveloperJWT and AAWalletSigner respectively.
+func (s *CredentialService) effectiveWithKey(ctx context.Context, tenantID string) (*EffectiveCredential, string, string, error) {
 	var (
-		holder, clientID string
-		signer, keyEnc   sql.NullString
+		holder, clientID      string
+		signer, keyEnc        sql.NullString
+		aaWallet, aaWalletKey sql.NullString
 	)
 	err := s.pdb.DBS().Reader.QueryRowContext(ctx, `
-		SELECT c.tenant_id, c.dimo_client_id, c.signer_address, c.dimo_api_key_enc
+		SELECT c.tenant_id, c.dimo_client_id, c.signer_address, c.dimo_api_key_enc,
+		       c.aa_wallet_address, c.aa_wallet_key_enc
 		  FROM tenants t
 		  JOIN tenant_credentials c
 		    ON (c.tenant_id = t.id OR c.tenant_id = t.parent_tenant_id)
 		   AND c.dimo_client_id IS NOT NULL
 		 WHERE t.id = $1::uuid
 		 ORDER BY (c.tenant_id = t.id) DESC
-		 LIMIT 1`, tenantID).Scan(&holder, &clientID, &signer, &keyEnc)
+		 LIMIT 1`, tenantID).Scan(&holder, &clientID, &signer, &keyEnc, &aaWallet, &aaWalletKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		// No credential row at all, or none with a client id — check the tenant
 		// exists so an unknown uuid is not misreported as "no credential".
@@ -110,27 +118,28 @@ func (s *CredentialService) effectiveWithKey(ctx context.Context, tenantID strin
 		if lookupErr := s.pdb.DBS().Reader.QueryRowContext(ctx,
 			`SELECT true FROM tenants WHERE id = $1::uuid`, tenantID).Scan(&exists); lookupErr != nil {
 			if errors.Is(lookupErr, sql.ErrNoRows) {
-				return nil, "", ErrTenantNotFound
+				return nil, "", "", ErrTenantNotFound
 			}
-			return nil, "", fmt.Errorf("load tenant %s: %w", tenantID, lookupErr)
+			return nil, "", "", fmt.Errorf("load tenant %s: %w", tenantID, lookupErr)
 		}
-		return nil, "", ErrNoCredential
+		return nil, "", "", ErrNoCredential
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("resolve effective credential of %s: %w", tenantID, err)
+		return nil, "", "", fmt.Errorf("resolve effective credential of %s: %w", tenantID, err)
 	}
 	return &EffectiveCredential{
-		TenantID:      holder,
-		ClientID:      clientID,
-		SignerAddress: signer.String,
-	}, keyEnc.String, nil
+		TenantID:        holder,
+		ClientID:        clientID,
+		SignerAddress:   signer.String,
+		AAWalletAddress: aaWallet.String,
+	}, keyEnc.String, aaWalletKey.String, nil
 }
 
 // DeveloperJWT mints a developer-license JWT for the tenant's effective
 // credential. The underlying AuthService caches the token and refreshes it on
 // expiry, so calling this per request is fine.
 func (s *CredentialService) DeveloperJWT(ctx context.Context, tenantID string) (*models.MintedToken, error) {
-	cred, keyEnc, err := s.effectiveWithKey(ctx, tenantID)
+	cred, keyEnc, _, err := s.effectiveWithKey(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +197,7 @@ func (s *CredentialService) DeveloperJWT(ctx context.Context, tenantID string) (
 // The key is decrypted, used, and discarded here — it does not leave this
 // service, same rule as the minter.
 func (s *CredentialService) SignAsTenant(ctx context.Context, tenantID string, message []byte) (string, *EffectiveCredential, error) {
-	cred, keyEnc, err := s.effectiveWithKey(ctx, tenantID)
+	cred, keyEnc, _, err := s.effectiveWithKey(ctx, tenantID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -232,6 +241,36 @@ func (s *CredentialService) ValidateCredential(clientID, apiKeyPlain string) err
 			clientID, mintAttempts)
 	}
 	return nil
+}
+
+// ErrNoAAWallet is returned when a tenant's effective credential has no AA
+// wallet configured. Like ErrNoCredential, a configuration state: the
+// license-holding tenant has not set one up.
+var ErrNoAAWallet = errors.New("tenant's effective credential has no AA wallet configured")
+
+// AAWalletSigner returns the effective credential's AA wallet address and its
+// decrypted root key, for owner-mode signing (docs/plans/08-aa-owner-signing.md).
+// Same rule as every other key in this service: decrypted for the duration of
+// one operation, never logged, never returned over the wire, never cached.
+// The stored form is canonical 64-char hex (AAWalletService.Set guarantees
+// it), so a parse failure here means a corrupt row, not a formatting quirk.
+func (s *CredentialService) AAWalletSigner(ctx context.Context, tenantID string) (common.Address, *ecdsa.PrivateKey, error) {
+	cred, _, aaKeyEnc, err := s.effectiveWithKey(ctx, tenantID)
+	if err != nil {
+		return common.Address{}, nil, err
+	}
+	if cred.AAWalletAddress == "" || aaKeyEnc == "" {
+		return common.Address{}, nil, fmt.Errorf("credential of tenant %s: %w", cred.TenantID, ErrNoAAWallet)
+	}
+	keyHex, err := DecryptSecret(s.settings.TenantSecretEncKey, aaKeyEnc)
+	if err != nil {
+		return common.Address{}, nil, fmt.Errorf("decrypt AA wallet key of tenant %s: %w", cred.TenantID, err)
+	}
+	pk, err := crypto.HexToECDSA(keyHex)
+	if err != nil {
+		return common.Address{}, nil, fmt.Errorf("AA wallet key of tenant %s does not parse: %w", cred.TenantID, err)
+	}
+	return common.HexToAddress(cred.AAWalletAddress), pk, nil
 }
 
 // signERC191 is the personal_sign scheme both source apps used (kaufmann's
