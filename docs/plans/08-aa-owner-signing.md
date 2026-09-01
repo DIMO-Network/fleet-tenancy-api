@@ -176,10 +176,14 @@ key, deliberately not the member gate; the error mapper passes 503 through so
 (`<aa-wallet-panel>` in Tenant Settings + three generic proxy routes; the
 generate flow is the wallet-creator port on the app's existing
 `PrivateSettings` rpc/bundler/paymaster and the already-installed ZeroDev SDK).
-One pre-flight for the first real generate: **verify b2b's prod
-`PAYMASTER_URL`/`BUNDLER_URL` secrets point at the sponsoring ZeroDev
-project** — the browser flow deploys through b2b's own settings, not this
-service's.
+The sponsorship pre-flight closed 2026-09-01: prod secrets were checked and
+deliberately left as they are (tenancy's `bundler_url` is one ZeroDev project,
+b2b's paymaster/bundler another) — per the user's research there is **no
+sponsorship limit or policy to worry about**, so any of the projects sponsors
+these UserOps and rotation for consistency's sake was declined. If a
+sponsorship refusal ever does appear in step 5, the fallback is rotating the
+relevant secret to the wallet-creator project and re-trying — a secret write
+plus a rollout restart, no release.
 
 **Step 4 — fleet-lite copy.** `AnnotateCanShare` needs no logic change — the
 improved `shareable-owners` answer flows through. The frontend work is
