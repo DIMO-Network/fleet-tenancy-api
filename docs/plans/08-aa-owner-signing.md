@@ -188,6 +188,13 @@ authorized fleet sharing" is wrong advice when the tenant has a fleet wallet —
 the actionable sentence is "not held by the fleet wallet". Pass the `via`
 field through if the copy wants to distinguish owner-mode shareables.
 
+Built 2026-09-01 — fleet-lite #152. The gateway decodes `ownerModeWallet` and
+a refused owner gets a new `not_fleet_wallet` blocker when the tenant has a
+wallet; the copy names the fix in both surfaces through the one
+`shareBlockReason` function. Safe to add a wire value because fleet-lite's BFF
+and frontend ship in one image — no skew window. Tenants without a wallet are
+byte-for-byte unchanged.
+
 **Step 5 — first prod exercise.** Configure a test tenant's wallet via the
 console generate flow, transfer one vehicle to it (existing b2b passkey
 transfer), send one share, watch the worker logs, then revoke it. The
