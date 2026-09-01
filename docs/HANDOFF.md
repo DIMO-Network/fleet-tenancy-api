@@ -4,7 +4,7 @@ Written 2026-08-06. Read this plus [`operator-tenancy/`](operator-tenancy/) —
 the full design set, published here 2026-08-12 once the two weaknesses it
 documents were fixed. An identical copy lives in `fleet-lite-app`.
 
-**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-08-22 21:05 UTC*.
+**Latest session handoff is at the end of this file** — *PICK UP HERE, 2026-09-01*.
 Start there; this file is long and appends newest-last.
 
 ## The goal in one paragraph
@@ -3570,7 +3570,7 @@ standing trap says verify the image on the workload rather than ArgoCD; the
 corollary is that the *chart in your editor* is not the chart that deployed
 either.)
 
-## PICK UP HERE — session handoff, 2026-08-22 ~21:05 UTC
+## Session handoff, 2026-08-22 ~21:05 UTC (superseded — see the end)
 
 **THE FIRST PRODUCTION VEHICLE SHARE LANDED ON CHAIN.** 2026-08-22 20:58:44
 UTC. The path that shipped in `v0.14.0` on 2026-08-19 and had never once
@@ -3700,3 +3700,61 @@ that works; **write URL-shaped secrets from a file, never as a shell argument**;
 cover it; **a 401 naming a missing API key can be a mangled key, not an absent
 one**; and **generate load in-cluster, not through Cloudflare**, which absorbed
 all but 16 of 240 requests.
+
+## PICK UP HERE — session handoff, 2026-09-01
+
+**Plan 08 (owner-mode signing) steps 1–4 are RELEASED TO PROD, and step 5 —
+the first live exercise — is one console session wide.** Everything that can
+be verified without a passkey has been.
+
+| Repo | PR | Released | Verified on the workload |
+|---|---|---|---|
+| this | #83 | `v0.29.0`, image `a807db8` | migration `20260831120000` applied; boot logs "owner-mode signing is configured"; `/v1/tenants/{id}/credentials/aa-wallet` answers 401 at the gate (registered) |
+| kaufmann-oracle | #228 | `v1.57.0` | `/v1/tenant/aa-wallet` answers 400 wanting Tenant-Id (registered); only the standing ruptela-ingest noise in the error stream |
+| b2b-fleet-mgr-app | #187 | `v1.14.0`, image `8dc76b0` | rolled out clean |
+| fleet-lite-app | #152 | `v0.30.0`, image `fdb29ff` — **also ships the unreleased #150 (CARTO tiles) and #151 (sync-vehicles)**, checked deliberately | rolled out clean |
+
+What the feature is, in one line: a tenant configures an AA wallet + root key
+(validated ON CHAIN before anything persists, stored encrypted here); vehicles
+that wallet owns are shared server-side through the kernel's sudo validator —
+no passkey, no owner-registered-our-signer arrangement. The per-tenant wallet
+row is the feature's only switch (`OwnerModeConfigured()` deliberately equals
+`SharingConfigured()`).
+
+**Sponsorship decision, 2026-09-01 (do not re-litigate):** prod secrets were
+checked and deliberately left alone — tenancy's `bundler_url` is one ZeroDev
+project, b2b's paymaster/bundler another, the wallet-creator's a third. Per
+the user's research there is no sponsorship limit or policy to worry about,
+so rotation for consistency was declined (option 2 of a recorded choice). If
+a sponsorship refusal ever appears, rotate the relevant secret to the
+wallet-creator project (`cde30207-…`) and rollout-restart; no release.
+
+### Step 5 — the console runbook (needs a human with manage_settings)
+
+1. b2b → Tenant Settings → **Fleet wallet** card → GENERATE FLEET WALLET.
+   Watch the progress states; the browser deploys the kernel with a sponsored
+   no-op, then registers it. A 400 back from the card is the tenancy service's
+   on-chain refusal and names what is wrong; a 503 means "no verdict, retry".
+2. Transfer one vehicle onto the new wallet with the existing passkey
+   transfer. It is a plain address transfer — the wallet appears nowhere
+   special in that flow.
+3. fleet-lite → the vehicle's share icon should light (the wallet arrives in
+   `shareable-owners` as a configuration-backed positive; other refused rows
+   now read "not held by the fleet wallet"). Send a share and watch:
+   `kubectl -n prod logs -l app.kubernetes.io/name=fleet-tenancy-api -c fleet-tenancy-api --since=10m -f | grep -iE "share|userop|mode"`
+   — the worker line now carries `mode=owner`. Same rules as 2026-08-22:
+   `MaxAttempts: 1`, no-receipt means unknown, a NEW failure is progress.
+4. Revoke it. Same mode selection, same log line.
+
+### Traps this session added
+
+- **`git fetch --tags` before reasoning about tags.** v0.28.0 existed remotely
+  (the #82 release) while the local clone's newest tag said v0.27.0 — the
+  "values-prod pins an unexplained image" mystery was exactly this staleness.
+- **fleet-lite's lint gate enforces localization sync**: any new `msg()`
+  string fails CI until `npm run localize` output is committed.
+- **CI has no database, so DB tests SKIP** — a `testStore(t)` with a PARENT
+  test's `t` inside a subtest turns that skip into a panic
+  (`FailNow on a parent test`). Pass the subtest's own `t` into fixtures.
+- kaufmann's `gotest` can fail on proxy.golang.org stream errors — an infra
+  flake; re-run before debugging.
