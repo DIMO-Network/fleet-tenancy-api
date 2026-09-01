@@ -169,6 +169,18 @@ kaufmann (the #197/#200 pattern, no local storage), and a settings section in
 b2b beside the dev-license config: paste (masked, write-only) or generate
 (D4). Deploy order as always: this service, then kaufmann, then b2b.
 
+Built 2026-09-01 — kaufmann #228 (`GET/PUT/DELETE /v1/tenant/aa-wallet`,
+gated on `manage_settings`: a settings write that hands over a fleet-owning
+key, deliberately not the member gate; the error mapper passes 503 through so
+"no verdict, retry" is never reported as a bad wallet) and b2b #187
+(`<aa-wallet-panel>` in Tenant Settings + three generic proxy routes; the
+generate flow is the wallet-creator port on the app's existing
+`PrivateSettings` rpc/bundler/paymaster and the already-installed ZeroDev SDK).
+One pre-flight for the first real generate: **verify b2b's prod
+`PAYMASTER_URL`/`BUNDLER_URL` secrets point at the sponsoring ZeroDev
+project** — the browser flow deploys through b2b's own settings, not this
+service's.
+
 **Step 4 — fleet-lite copy.** `AnnotateCanShare` needs no logic change — the
 improved `shareable-owners` answer flows through. The frontend work is
 `web/src/utils/share-blocker.ts`: the `'owner'` blocker's "this account hasn't
