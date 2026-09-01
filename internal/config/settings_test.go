@@ -173,6 +173,33 @@ func TestSharingConfigured(t *testing.T) {
 	}
 }
 
+// OwnerModeConfigured tracks SharingConfigured exactly — one ZeroDev project
+// carries both signing paths (decided 2026-09-01), so there is no
+// owner-mode-specific setting to half-configure. The per-feature switch is the
+// tenant's aa_wallet credential row, not an env var. The method exists so the
+// three surfaces that consult it keep naming the question they ask.
+func TestOwnerModeConfigured(t *testing.T) {
+	full := func() *Settings {
+		return &Settings{
+			SacdAddress:         "0x3c152B5d96769661008Ff404224d6530FCAC766d",
+			SyntheticNftAddress: "0x4804e8D1661cd1a1e5dDdE1ff458A7f878c0aC6D",
+			VehicleNftAddress:   "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
+			RPCURL:              mustURL(t, "https://polygon-mainnet.example/v2/key"),
+			BundlerURL:          mustURL(t, "https://rpc.zerodev.app/api/v2/bundler/proj"),
+			ChainID:             137,
+		}
+	}
+
+	require.True(t, full().OwnerModeConfigured())
+
+	t.Run("owner mode is off exactly when sharing is", func(t *testing.T) {
+		s := full()
+		s.BundlerURL = url.URL{}
+		assert.False(t, s.SharingConfigured())
+		assert.False(t, s.OwnerModeConfigured())
+	})
+}
+
 // Sharing settings are not boot-required, and stay that way. The service is
 // load-bearing for two apps that fail closed on /v1/authz, so it must keep
 // booting in an environment where sharing is simply off. What Validate does

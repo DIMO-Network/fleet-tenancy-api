@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/gateway"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/rs/zerolog"
@@ -48,6 +49,9 @@ type SharedSignerService struct {
 	// batch out of budget in a few hundred milliseconds instead of three
 	// seconds. Nothing in production sets it.
 	coldBudget time.Duration
+	// settings is consulted for exactly one bit: OwnerModeConfigured, which
+	// gates whether the tenant's AA wallet counts as a signable owner.
+	settings *config.Settings
 }
 
 // signerLookupConcurrency bounds the fan-out when owners are genuinely unknown.
@@ -92,12 +96,13 @@ const recordTimeout = 5 * time.Second
 const warmLookupConcurrency = 16
 
 func NewSharedSignerService(logger *zerolog.Logger, accounts gateway.AccountsAPI,
-	creds credentialProvider, store *SharedAccountStore) *SharedSignerService {
+	creds credentialProvider, store *SharedAccountStore, settings *config.Settings) *SharedSignerService {
 	return &SharedSignerService{
 		logger:     logger.With().Str("component", "shared-signer").Logger(),
 		accounts:   accounts,
 		creds:      creds,
 		store:      store,
+		settings:   settings,
 		coldBudget: coldLookupBudget,
 	}
 }
@@ -124,28 +129,50 @@ func (s *SharedSignerService) MaySignFor(ctx context.Context, tenantID, ownerAdd
 	return nil
 }
 
-// FilterSignable returns the subset of owners this tenant may sign for.
+// FilterSignable returns the subset of owners this tenant may sign for, and
+// the tenant's AA wallet address when one is configured (empty otherwise).
 //
 // This is the display gate behind fleet-lite's per-vehicle share button. Owners
 // are deduplicated before any upstream call because a customer tenant's whole
 // fleet typically sits on one kernel account — the list may hold a hundred
 // vehicles and one distinct owner.
 //
+// The AA wallet is a positive with no lookup (docs/plans/08-aa-owner-signing.md):
+// it is the tenant's own wallet, proven at config time to be controlled by the
+// stored key, so accounts-api has no question to answer about it. It is
+// reported positive even when the tenant has no signer at all — owner mode is
+// exactly how a tenant without the signer arrangement shares.
+//
 // An infrastructure failure is fatal to the whole call rather than being
 // treated as "not signable" per owner. Degrading to a partial answer would hide
 // share buttons during an accounts-api blip and look exactly like the feature
 // being switched off.
-func (s *SharedSignerService) FilterSignable(ctx context.Context, tenantID string, owners []string) ([]string, []string, error) {
-	signer, err := s.tenantSigner(ctx, tenantID)
-	if err != nil || signer == "" {
-		// No signer means nothing to compare against, and no reason to ask
-		// accounts-api about a single owner. A denial for every owner, not an
-		// error: the tenant is simply not set up for shared signing.
-		return []string{}, nil, err
+func (s *SharedSignerService) FilterSignable(ctx context.Context, tenantID string, owners []string) ([]string, []string, string, error) {
+	cred, err := s.creds.Effective(ctx, tenantID)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("resolve effective credential for %s: %w", tenantID, err)
+	}
+	var signer, aaWallet string
+	if cred.SignerAddress != "" {
+		signer = common.HexToAddress(cred.SignerAddress).Hex()
+	}
+	// Gated on the same switch the authorizer consults, so the display gate
+	// cannot light up a wallet the execution path would refuse to sign for.
+	// MaySignFor funnels through here too (check), which makes all three
+	// surfaces — display, HTTP authorize, worker authorize — read one switch.
+	if s.settings.OwnerModeConfigured() && cred.AAWalletAddress != "" {
+		aaWallet = common.HexToAddress(cred.AAWalletAddress).Hex()
+	}
+	if signer == "" && aaWallet == "" {
+		// Nothing to compare against and no wallet of our own: a denial for
+		// every owner, not an error — the tenant is simply not set up for
+		// server-signed operations of either kind.
+		return []string{}, nil, "", nil
 	}
 
 	seen := map[string]bool{}
 	distinct := make([]string, 0, len(owners))
+	aaPositive := false
 	for _, owner := range owners {
 		if !common.IsHexAddress(owner) {
 			continue
@@ -153,16 +180,30 @@ func (s *SharedSignerService) FilterSignable(ctx context.Context, tenantID strin
 		key := common.HexToAddress(owner).Hex()
 		if !seen[key] {
 			seen[key] = true
+			if aaWallet != "" && key == aaWallet {
+				// The tenant's own wallet: positive by construction, and kept
+				// out of the lookup set so a signerless tenant never reaches
+				// accounts-api at all.
+				aaPositive = true
+				continue
+			}
 			distinct = append(distinct, key)
 		}
 	}
-	if len(distinct) == 0 {
-		return []string{}, nil, nil
+	if len(distinct) == 0 || signer == "" {
+		// Everything left would need the signer arrangement, and either there
+		// is nothing left or there is no signer to compare against — the
+		// remaining owners are denials, not unknowns.
+		out := []string{}
+		if aaPositive {
+			out = append(out, aaWallet)
+		}
+		return out, nil, aaWallet, nil
 	}
 
 	known, err := s.store.Lookup(ctx, distinct)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	now := time.Now()
@@ -185,7 +226,7 @@ func (s *SharedSignerService) FilterSignable(ctx context.Context, tenantID strin
 			// A real upstream failure is still all-or-nothing. A degraded
 			// answer would hide share buttons during an accounts-api blip and
 			// be indistinguishable from the feature being switched off.
-			return nil, nil, rerr
+			return nil, nil, "", rerr
 		}
 		for owner, sa := range resolved {
 			registered[owner] = sa
@@ -204,12 +245,15 @@ func (s *SharedSignerService) FilterSignable(ctx context.Context, tenantID strin
 	}
 
 	out := []string{}
+	if aaPositive {
+		out = append(out, aaWallet)
+	}
 	for _, owner := range distinct {
 		if registered[owner] != "" && strings.EqualFold(registered[owner], signer) {
 			out = append(out, owner)
 		}
 	}
-	return out, unresolved, nil
+	return out, unresolved, aaWallet, nil
 }
 
 // resolveMany asks accounts-api about the owners nothing is known about, up to
@@ -451,25 +495,11 @@ func (s *SharedSignerService) lookupSigner(ctx context.Context, owner, token str
 	return account.ProvidedSignerAddress, nil
 }
 
-// tenantSigner is the tenant's effective signer, resolved ONCE per call. The
-// old shape resolved the effective credential inside the per-owner check, so a
-// fleet with three hundred distinct owners resolved it three hundred times.
-func (s *SharedSignerService) tenantSigner(ctx context.Context, tenantID string) (string, error) {
-	cred, err := s.creds.Effective(ctx, tenantID)
-	if err != nil {
-		return "", fmt.Errorf("resolve effective credential for %s: %w", tenantID, err)
-	}
-	if cred.SignerAddress == "" {
-		return "", nil
-	}
-	return common.HexToAddress(cred.SignerAddress).Hex(), nil
-}
-
 func (s *SharedSignerService) check(ctx context.Context, tenantID, ownerAddress string) (bool, error) {
 	if !common.IsHexAddress(ownerAddress) {
 		return false, nil
 	}
-	signable, _, err := s.FilterSignable(ctx, tenantID, []string{ownerAddress})
+	signable, _, _, err := s.FilterSignable(ctx, tenantID, []string{ownerAddress})
 	if err != nil {
 		return false, err
 	}

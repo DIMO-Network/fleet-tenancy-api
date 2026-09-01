@@ -178,7 +178,7 @@ func opsFixture(t *testing.T, queue *opsQueue, clientID string) *fiber.App {
 	creds := &opsCreds{effective: &service.EffectiveCredential{
 		TenantID: opsTenant, ClientID: clientID, SignerAddress: signerAddr,
 	}}
-	signerSvc := service.NewSharedSignerService(&logger, &opsAccounts{signer: signerAddr}, creds, service.NewSharedAccountStore(&store))
+	signerSvc := service.NewSharedSignerService(&logger, &opsAccounts{signer: signerAddr}, creds, service.NewSharedAccountStore(&store), cfg)
 	shares := service.NewShareAuthorizer(&logger, &store,
 		&opsIdentity{owners: map[int64]string{opsTokenID: opsOwnerWallet}}, signerSvc, creds, cfg)
 	tenants := service.NewTenantService(&logger, &store)

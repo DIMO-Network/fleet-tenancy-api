@@ -26,7 +26,7 @@ func revokeFixture(t *testing.T, auth *stubAuthorizer, fleet *stubFleet) *Revoke
 		VehicleNftAddress: "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
 		ChainID:           137,
 	}
-	return NewRevokeWorker(&logger, settings, auth, fleet)
+	return NewRevokeWorker(&logger, settings, auth, fleet, nil)
 }
 
 func revokeJob(args RevokeArgs) *river.Job[RevokeArgs] {

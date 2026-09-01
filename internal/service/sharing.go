@@ -94,43 +94,71 @@ func ValidateGrantee(grantee string, owner common.Address) error {
 }
 
 // AuthorizeShare runs the chain and returns what a share needs to execute: the
-// vehicle's current owner and the tenant's signer key.
+// vehicle's current owner, the key to sign with, and WHICH WAY to sign —
+// ownerMode true means the key is the owner's own AA-wallet root key and the
+// UserOp goes through the kernel's sudo validator; false means the key is the
+// tenant's signer and it goes through the owner's secondary weighted-ECDSA
+// validator, exactly as before.
 //
 // The order is chosen so the cheapest and most local check fails first, and so
 // no upstream call is made on behalf of a tenant that has no business asking:
 //
 //  1. entitlement — is this vehicle in the tenant's fleet at all?
 //  2. owner       — who currently holds it? (live, never cached)
-//  3. signer      — did that owner authorise this tenant's signer? (live)
-//  4. signer key  — do we actually hold the key to sign with?
+//  3. mode        — is the owner the tenant's own AA wallet?
+//     (docs/plans/08-aa-owner-signing.md, D5: decided per vehicle from the
+//     live owner, never a per-tenant switch — the chain already says who owns
+//     each vehicle, and a switch would store that fact twice)
+//  4. signer      — otherwise: did that owner authorise this tenant's signer? (live)
+//  5. key         — do we actually hold the key the chosen mode signs with?
+//
+// In owner mode the MaySignFor check is deliberately skipped: the wallet is
+// the tenant's own and accounts-api has nothing to say about it. What stands
+// in for it is the config-time proof that the stored key controls the wallet's
+// sudo validator, plus the owner equality established here against the SAME
+// live lookup the signer path uses.
 //
 // The caller's capability is NOT checked here. That is the request's property,
 // checked once at the HTTP boundary; re-reading it at execution time would let
 // a membership edit between submit and run cancel work that was permitted when
 // it started.
-func (a *ShareAuthorizer) AuthorizeShare(ctx context.Context, tenantID string, tokenID int64) (common.Address, *ecdsa.PrivateKey, error) {
+func (a *ShareAuthorizer) AuthorizeShare(ctx context.Context, tenantID string, tokenID int64) (common.Address, *ecdsa.PrivateKey, bool, error) {
 	if err := a.assertEntitled(ctx, tenantID, tokenID); err != nil {
-		return common.Address{}, nil, err
+		return common.Address{}, nil, false, err
 	}
 
 	ownerHex, err := a.identity.VehicleOwner(tokenID)
 	if err != nil {
 		if errors.Is(err, gateway.ErrVehicleNotFound) {
-			return common.Address{}, nil, ErrVehicleUnknown
+			return common.Address{}, nil, false, ErrVehicleUnknown
 		}
-		return common.Address{}, nil, fmt.Errorf("resolve owner of vehicle %d: %w", tokenID, err)
+		return common.Address{}, nil, false, fmt.Errorf("resolve owner of vehicle %d: %w", tokenID, err)
 	}
 	owner := common.HexToAddress(ownerHex)
 
-	if err := a.signer.MaySignFor(ctx, tenantID, owner.Hex()); err != nil {
-		return common.Address{}, nil, err
+	cred, err := a.creds.Effective(ctx, tenantID)
+	if err != nil {
+		return common.Address{}, nil, false, fmt.Errorf("resolve effective credential: %w", err)
 	}
 
-	signerPK, err := a.signerKey(ctx, tenantID)
-	if err != nil {
-		return common.Address{}, nil, err
+	if a.settings.OwnerModeConfigured() && cred.AAWalletAddress != "" &&
+		owner == common.HexToAddress(cred.AAWalletAddress) {
+		rootPK, err := a.aaWalletKey(ctx, cred.TenantID)
+		if err != nil {
+			return common.Address{}, nil, false, err
+		}
+		return owner, rootPK, true, nil
 	}
-	return owner, signerPK, nil
+
+	if err := a.signer.MaySignFor(ctx, tenantID, owner.Hex()); err != nil {
+		return common.Address{}, nil, false, err
+	}
+
+	signerPK, err := a.signerKeyOf(ctx, cred.TenantID)
+	if err != nil {
+		return common.Address{}, nil, false, err
+	}
+	return owner, signerPK, false, nil
 }
 
 // GranteeClientID resolves the address a grant_sacd operation grants to: the
@@ -196,22 +224,18 @@ func (a *ShareAuthorizer) assertEntitled(ctx context.Context, tenantID string, t
 	return nil
 }
 
-// signerKey decrypts the effective credential's signer private key.
+// signerKeyOf decrypts the signer private key of the credential-holding tenant
+// AuthorizeShare already resolved.
 //
 // The decrypted key exists only for the duration of the call that uses it and
 // goes nowhere else — not to a log, not to a response, not to a cache. Same
 // discipline as CredentialService, which is the only other place in this
 // service that holds plaintext key material.
-func (a *ShareAuthorizer) signerKey(ctx context.Context, tenantID string) (*ecdsa.PrivateKey, error) {
-	cred, err := a.creds.Effective(ctx, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve effective credential: %w", err)
-	}
-
+func (a *ShareAuthorizer) signerKeyOf(ctx context.Context, credTenantID string) (*ecdsa.PrivateKey, error) {
 	var keyEnc sql.NullString
-	err = a.pdb.DBS().Reader.QueryRowContext(ctx,
+	err := a.pdb.DBS().Reader.QueryRowContext(ctx,
 		`SELECT signer_key_enc FROM tenant_credentials WHERE tenant_id = $1`,
-		cred.TenantID).Scan(&keyEnc)
+		credTenantID).Scan(&keyEnc)
 	if errors.Is(err, sql.ErrNoRows) || !keyEnc.Valid || keyEnc.String == "" {
 		return nil, ErrNoSignerKey
 	}
@@ -223,11 +247,42 @@ func (a *ShareAuthorizer) signerKey(ctx context.Context, tenantID string) (*ecds
 	if err != nil {
 		// GCM authenticates, so this is the wrong master key or a corrupt row.
 		// Named without the material, like the credential service does.
-		return nil, fmt.Errorf("decrypt signer key of tenant %s: %w", cred.TenantID, err)
+		return nil, fmt.Errorf("decrypt signer key of tenant %s: %w", credTenantID, err)
 	}
 	pk, err := crypto.HexToECDSA(plaintext)
 	if err != nil {
-		return nil, fmt.Errorf("parse signer key of tenant %s: %w", cred.TenantID, err)
+		return nil, fmt.Errorf("parse signer key of tenant %s: %w", credTenantID, err)
+	}
+	return pk, nil
+}
+
+// aaWalletKey decrypts the AA wallet root key of the credential-holding
+// tenant, under the same one-call lifetime discipline as signerKeyOf. The
+// stored form is canonical hex (AAWalletService.Set guarantees it), so a parse
+// failure means a corrupt row, not a formatting quirk.
+func (a *ShareAuthorizer) aaWalletKey(ctx context.Context, credTenantID string) (*ecdsa.PrivateKey, error) {
+	var keyEnc sql.NullString
+	err := a.pdb.DBS().Reader.QueryRowContext(ctx,
+		`SELECT aa_wallet_key_enc FROM tenant_credentials WHERE tenant_id = $1`,
+		credTenantID).Scan(&keyEnc)
+	if errors.Is(err, sql.ErrNoRows) || !keyEnc.Valid || keyEnc.String == "" {
+		// The CHECK constraint makes address-without-key unrepresentable, so
+		// reaching this means the row changed between the Effective read and
+		// now. Named for what it is rather than misreported as a signer issue.
+		return nil, fmt.Errorf("AA wallet key of tenant %s vanished during authorization: %w",
+			credTenantID, ErrNoAAWallet)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read AA wallet key: %w", err)
+	}
+
+	plaintext, err := DecryptSecret(a.settings.TenantSecretEncKey, keyEnc.String)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt AA wallet key of tenant %s: %w", credTenantID, err)
+	}
+	pk, err := crypto.HexToECDSA(plaintext)
+	if err != nil {
+		return nil, fmt.Errorf("parse AA wallet key of tenant %s: %w", credTenantID, err)
 	}
 	return pk, nil
 }

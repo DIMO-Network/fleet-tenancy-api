@@ -152,7 +152,7 @@ func (a SharedOpArgs) Validate() error {
 // service.ShareAuthorizer; an interface here so the worker tests need no
 // database.
 type OpAuthorizer interface {
-	AuthorizeShare(ctx context.Context, tenantID string, tokenID int64) (owner common.Address, signerPK *ecdsa.PrivateKey, err error)
+	AuthorizeShare(ctx context.Context, tenantID string, tokenID int64) (owner common.Address, signerPK *ecdsa.PrivateKey, ownerMode bool, err error)
 	GranteeClientID(ctx context.Context, tenantID string) (common.Address, error)
 }
 
@@ -221,13 +221,24 @@ func (w *SharedOpWorker) Work(ctx context.Context, job *river.Job[SharedOpArgs])
 		return err
 	}
 
-	owner, signerPK, err := w.authorizer.AuthorizeShare(ctx, args.TenantID, args.TokenID)
+	owner, signerPK, ownerMode, err := w.authorizer.AuthorizeShare(ctx, args.TenantID, args.TokenID)
 	if err != nil {
 		// The world changed between submit and run — the vehicle was
 		// transferred, or the owner revoked our signer. Fail loudly rather
 		// than proceed on the HTTP handler's older answer.
 		log.Warn().Err(err).Msg("shared operation not authorized at execution time")
 		return fmt.Errorf("authorize %s: %w", args.Op, err)
+	}
+	if ownerMode {
+		// Owner-mode shared operations are plan 08 step 7, not step 2. Refused
+		// here rather than sent, because every path below signs through the
+		// owner's weighted-ECDSA validator — which a tenant AA wallet does not
+		// have — and the transfer op additionally chains a re-share whose
+		// signer-gate logic assumes the signer arrangement. The endpoint
+		// refuses these up front; this guard is for a job already queued when
+		// the vehicle moved onto the AA wallet.
+		log.Warn().Msg("shared operation refused: vehicle is owned by the tenant's AA wallet")
+		return fmt.Errorf("%s of an AA-wallet-owned vehicle is not supported yet (plan 08 step 7)", args.Op)
 	}
 
 	switch args.Op {

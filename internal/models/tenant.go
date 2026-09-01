@@ -78,6 +78,25 @@ type SetCredentialsInput struct {
 	APIKey   string `json:"apiKey"`
 }
 
+// SetAAWalletInput configures the tenant's AA wallet — the Kernel v3.1 smart
+// account that owns fleet vehicles, and the root EOA key that is its sudo
+// validator (docs/plans/08-aa-owner-signing.md). Write-only: no response ever
+// carries the key back.
+type SetAAWalletInput struct {
+	WalletAddress string `json:"walletAddress"`
+	PrivateKey    string `json:"privateKey"`
+}
+
+// AAWalletStatus is the readback for the AA wallet config: the effective
+// wallet a tenant resolves to (its own credential's, or its parent's), never
+// any key material. CredentialTenantID names the holder so a console can tell
+// "configured here" from "inherited".
+type AAWalletStatus struct {
+	Configured         bool   `json:"configured"`
+	WalletAddress      string `json:"walletAddress,omitempty"`
+	CredentialTenantID string `json:"credentialTenantId,omitempty"`
+}
+
 // UpdateTenantInput patches a tenant. Every field is optional; a nil pointer
 // means "leave alone", which is why these are pointers rather than values —
 // with plain types, "" and false are indistinguishable from absent, and

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/gateway"
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/models"
 	"github.com/ethereum/go-ethereum/common"
@@ -50,7 +51,7 @@ func signerFixture(t *testing.T, accounts *fakeAccounts, signer string) *SharedS
 	}
 	clear()
 	t.Cleanup(clear)
-	return NewSharedSignerService(&logger, accounts, creds, NewSharedAccountStore(store))
+	return NewSharedSignerService(&logger, accounts, creds, NewSharedAccountStore(store), &config.Settings{})
 }
 
 // The happy path: the owner's kernel registered this tenant's signer, so the
@@ -140,7 +141,7 @@ func TestFilterSignable(t *testing.T) {
 	}}
 	svc := signerFixture(t, accounts, tenantSigner)
 
-	got, _, err := svc.FilterSignable(context.Background(), "t1",
+	got, _, _, err := svc.FilterSignable(context.Background(), "t1",
 		[]string{lower(ownerWallet), otherSigner, "not-an-address", ""})
 	require.NoError(t, err)
 	assert.Equal(t, []string{ownerWallet}, got,
@@ -160,7 +161,7 @@ func TestFilterSignable_DeduplicatesBeforeCallingUpstream(t *testing.T) {
 	for i := range owners {
 		owners[i] = ownerWallet
 	}
-	got, _, err := svc.FilterSignable(context.Background(), "t1", owners)
+	got, _, _, err := svc.FilterSignable(context.Background(), "t1", owners)
 	require.NoError(t, err)
 	assert.Equal(t, []string{ownerWallet}, got, "one distinct owner, one entry")
 }
@@ -175,7 +176,7 @@ func TestFilterSignable_CachesWithinTTL(t *testing.T) {
 	svc.accounts = accounts
 
 	for i := 0; i < 3; i++ {
-		_, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
+		_, _, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
 		require.NoError(t, err)
 	}
 	assert.Equal(t, 1, accounts.calls, "the answer should be cached across calls")
@@ -187,7 +188,7 @@ func TestFilterSignable_CachesWithinTTL(t *testing.T) {
 func TestFilterSignable_UpstreamFailureFailsTheCall(t *testing.T) {
 	svc := signerFixture(t, &fakeAccounts{byWalletErr: errors.New("boom")}, tenantSigner)
 
-	_, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
+	_, _, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
 	assert.Error(t, err, "a degraded answer would look like the feature being switched off")
 }
 
@@ -221,7 +222,7 @@ func TestFilterSignable_LearnedAnswerSurvivesANewService(t *testing.T) {
 	svc := signerFixture(t, accounts.fake(), tenantSigner)
 	svc.accounts = accounts
 
-	got, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
+	got, _, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
 	require.NoError(t, err)
 	require.Equal(t, []string{ownerWallet}, got)
 	require.Equal(t, 1, accounts.calls)
@@ -232,9 +233,9 @@ func TestFilterSignable_LearnedAnswerSurvivesANewService(t *testing.T) {
 		minted:    &models.MintedToken{Token: "jwt", ClientID: "0xclient"},
 		effective: &EffectiveCredential{TenantID: "t1", ClientID: "0xclient", SignerAddress: tenantSigner},
 	}
-	fresh := NewSharedSignerService(&logger, accounts, creds, NewSharedAccountStore(testStore(t)))
+	fresh := NewSharedSignerService(&logger, accounts, creds, NewSharedAccountStore(testStore(t)), &config.Settings{})
 
-	got, _, err = fresh.FilterSignable(context.Background(), "t1", []string{ownerWallet})
+	got, _, _, err = fresh.FilterSignable(context.Background(), "t1", []string{ownerWallet})
 	require.NoError(t, err)
 	assert.Equal(t, []string{ownerWallet}, got)
 	assert.Equal(t, 1, accounts.calls, "a restart must not re-ask what is already known")
@@ -288,7 +289,7 @@ func TestFilterSignable_RemembersNegatives(t *testing.T) {
 	svc.accounts = accounts
 
 	for i := 0; i < 3; i++ {
-		got, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
+		got, _, _, err := svc.FilterSignable(context.Background(), "t1", []string{ownerWallet})
 		require.NoError(t, err)
 		assert.Empty(t, got)
 	}
@@ -318,8 +319,8 @@ func TestFilterSignable_ResolvesTheCredentialOncePerCall(t *testing.T) {
 			"{"+strings.Join(owners, ",")+"}")
 	})
 
-	svc := NewSharedSignerService(&logger, accounts, creds, NewSharedAccountStore(store))
-	_, _, err := svc.FilterSignable(context.Background(), "t1", owners)
+	svc := NewSharedSignerService(&logger, accounts, creds, NewSharedAccountStore(store), &config.Settings{})
+	_, _, _, err := svc.FilterSignable(context.Background(), "t1", owners)
 	require.NoError(t, err)
 
 	assert.Equal(t, 1, creds.effectiveCalls, "one effective-credential resolution for the whole fleet")
@@ -409,7 +410,7 @@ func TestFilterSignable_BudgetExhaustionKeepsWhatItLearned(t *testing.T) {
 	t.Cleanup(clear)
 
 	ctx := context.Background()
-	got, unresolved, err := svc.FilterSignable(ctx, "t1", wallets)
+	got, unresolved, _, err := svc.FilterSignable(ctx, "t1", wallets)
 	require.NoError(t, err, "a blown budget is not an upstream failure")
 	require.NotEmpty(t, got, "the call must have resolved some owners or it proves nothing")
 	require.NotEmpty(t, unresolved, "the call must have run out of budget or it proves nothing")
@@ -423,7 +424,7 @@ func TestFilterSignable_BudgetExhaustionKeepsWhatItLearned(t *testing.T) {
 	// Convergence: the second render pays only for what the first did not
 	// reach. Before the fix it re-asked accounts-api about all 120, forever.
 	asked := accounts.callCount()
-	_, unresolved2, err := svc.FilterSignable(ctx, "t1", wallets)
+	_, unresolved2, _, err := svc.FilterSignable(ctx, "t1", wallets)
 	require.NoError(t, err)
 	assert.Less(t, len(unresolved2), len(unresolved), "the second render must make progress")
 	assert.Equal(t, len(unresolved)-len(unresolved2), accounts.callCount()-asked,
@@ -483,7 +484,7 @@ func TestWarm_ResolvesTheWholeFleetAndIsCheapToRepeat(t *testing.T) {
 	assert.Equal(t, asked, accounts.calls, "a warm run must not re-ask what it already recorded")
 
 	// And the display gate now answers from the table alone.
-	got, unresolved, err := svc.FilterSignable(ctx, "t1", wallets)
+	got, unresolved, _, err := svc.FilterSignable(ctx, "t1", wallets)
 	require.NoError(t, err)
 	assert.Empty(t, unresolved, "a warmed fleet leaves the render nothing to resolve")
 	assert.Len(t, got, owners/2)

@@ -27,18 +27,19 @@ var (
 )
 
 type stubAuthorizer struct {
-	owner common.Address
-	pk    *ecdsa.PrivateKey
-	err   error
-	calls int
+	owner     common.Address
+	pk        *ecdsa.PrivateKey
+	ownerMode bool
+	err       error
+	calls     int
 }
 
-func (s *stubAuthorizer) AuthorizeShare(context.Context, string, int64) (common.Address, *ecdsa.PrivateKey, error) {
+func (s *stubAuthorizer) AuthorizeShare(context.Context, string, int64) (common.Address, *ecdsa.PrivateKey, bool, error) {
 	s.calls++
 	if s.err != nil {
-		return common.Address{}, nil, s.err
+		return common.Address{}, nil, false, s.err
 	}
-	return s.owner, s.pk, nil
+	return s.owner, s.pk, s.ownerMode, nil
 }
 
 type stubFleet struct {
@@ -58,6 +59,24 @@ func (s *stubFleet) SendCall(_ context.Context, kernel common.Address, pk *ecdsa
 	return s.result, s.err
 }
 
+// stubOwnerCaller mirrors stubFleet for the owner-mode path, so a test can
+// assert which of the two signing paths a job took.
+type stubOwnerCaller struct {
+	calls  int
+	wallet common.Address
+	pk     *ecdsa.PrivateKey
+	msg    *ethereum.CallMsg
+	result *zerodev.UserOperationResult
+	err    error
+}
+
+func (s *stubOwnerCaller) SendOwnerCall(_ context.Context, wallet common.Address, pk *ecdsa.PrivateKey,
+	msg *ethereum.CallMsg, _ bool) (*zerodev.UserOperationResult, error) {
+	s.calls++
+	s.wallet, s.pk, s.msg = wallet, pk, msg
+	return s.result, s.err
+}
+
 func receipt() *zerodev.UserOperationResult {
 	h := hexutil.Bytes(common.HexToHash("0xabc").Bytes())
 	return &zerodev.UserOperationResult{Receipt: &zerodev.UserOperationReceipt{TransactionHash: &h}}
@@ -71,7 +90,7 @@ func workerFixture(t *testing.T, auth *stubAuthorizer, fleet *stubFleet) *ShareW
 		VehicleNftAddress: "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
 		ChainID:           137,
 	}
-	w := NewShareWorker(&logger, settings, auth, fleet)
+	w := NewShareWorker(&logger, settings, auth, fleet, nil)
 	w.now = func() time.Time { return time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC) }
 	return w
 }

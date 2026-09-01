@@ -186,24 +186,38 @@ func shareWorkers(ctx context.Context, logger *zerolog.Logger, settings *config.
 		logger.Fatal().Err(err).Msg("sharing is configured but its fleet client could not be built")
 	}
 
+	// Owner mode (docs/plans/08-aa-owner-signing.md) rides the sharing config —
+	// same ZeroDev project, so OwnerModeConfigured is true whenever sharing is.
+	// The per-tenant switch is the aa_wallet credential row; with none stored,
+	// this client dials and then never sends.
+	var ownerClient sharing.OwnerCaller
+	if settings.OwnerModeConfigured() {
+		oc, oerr := sharing.NewOwnerClient(settings)
+		if oerr != nil {
+			logger.Fatal().Err(oerr).Msg("owner mode is configured but its client could not be built")
+		}
+		ownerClient = oc
+		logger.Info().Msg("owner-mode signing is configured")
+	}
+
 	credSvc := service.NewCredentialService(logger, pdb, settings,
 		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint))
 	signerSvc := service.NewSharedSignerService(logger,
 		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint), credSvc,
-		service.NewSharedAccountStore(pdb))
+		service.NewSharedAccountStore(pdb), settings)
 	authorizer := service.NewShareAuthorizer(logger, pdb,
 		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint),
 		signerSvc, credSvc, settings)
 
 	workers := river.NewWorkers()
-	if err := river.AddWorkerSafely(workers, sharing.NewShareWorker(logger, settings, authorizer, fleetClient)); err != nil {
+	if err := river.AddWorkerSafely(workers, sharing.NewShareWorker(logger, settings, authorizer, fleetClient, ownerClient)); err != nil {
 		logger.Fatal().Err(err).Msg("failed to register the vehicle-share worker")
 	}
 	// Revocation is its own worker on the same queue and the same authorizer.
 	// It writes a zeroed SACD record where the share worker writes a granting
 	// one, and it is separate so "who un-shared this vehicle" is a job kind you
 	// can select on rather than a field you have to remember to filter.
-	if err := river.AddWorkerSafely(workers, sharing.NewRevokeWorker(logger, settings, authorizer, fleetClient)); err != nil {
+	if err := river.AddWorkerSafely(workers, sharing.NewRevokeWorker(logger, settings, authorizer, fleetClient, ownerClient)); err != nil {
 		logger.Fatal().Err(err).Msg("failed to register the vehicle-share revoke worker")
 	}
 	// The typed shared-operations worker (plan 06 step 3) shares the queue,
