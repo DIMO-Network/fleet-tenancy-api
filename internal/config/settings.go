@@ -98,6 +98,18 @@ type Settings struct {
 	SyntheticNftAddress string  `yaml:"SYNTHETIC_NFT_ADDRESS"`
 	RPCURL              url.URL `yaml:"RPC_URL"`     // secret
 	BundlerURL          url.URL `yaml:"BUNDLER_URL"` // secret
+	// AABundlerURL is the ZeroDev project URL (bundler + paymaster in one, like
+	// BUNDLER_URL) for OWNER-MODE operations — UserOps sent from a tenant's own
+	// AA wallet, signed with its root key (docs/plans/08-aa-owner-signing.md).
+	// A separate setting because sponsorship is per-project: the project
+	// confirmed to sponsor UserOps from fresh tenant AA wallets (2026-08-31,
+	// the one the wallet-creator flow uses) need not be the project behind
+	// BUNDLER_URL. Optional on top of sharing, like SACD_UPLOAD_URL: unset
+	// means owner mode is off and the authorizer never selects it, while
+	// everything that exists today keeps working. The URL embeds the project id,
+	// which spends that project's sponsorship budget — treat it like the other
+	// two URL secrets.
+	AABundlerURL url.URL `yaml:"AA_BUNDLER_URL"` // secret
 
 	// TrustedCallerKeys is the pre-shared key set that gates /v1, formatted
 	// "name:key,name:key". The name is for logging and revocation only; it is
@@ -174,6 +186,15 @@ func (s *Settings) SharingConfigured() bool {
 		s.RPCURL.String() != "" &&
 		s.BundlerURL.String() != "" &&
 		s.ChainID != 0
+}
+
+// OwnerModeConfigured reports whether owner-mode signing — UserOps sent from a
+// tenant's own AA wallet (docs/plans/08-aa-owner-signing.md) — can run. It
+// requires everything sharing requires plus the AA project URL, and is the one
+// switch the authorizer consults before selecting owner mode: unset, every
+// share falls through to the shared-signer path exactly as before.
+func (s *Settings) OwnerModeConfigured() bool {
+	return s.SharingConfigured() && s.AABundlerURL.String() != ""
 }
 
 // Validate rejects configurations that would silently do the wrong thing.

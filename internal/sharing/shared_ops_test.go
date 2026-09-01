@@ -34,18 +34,19 @@ var (
 type stubOpAuthorizer struct {
 	owner       common.Address
 	pk          *ecdsa.PrivateKey
+	ownerMode   bool
 	err         error
 	calls       int
 	clientID    common.Address
 	clientIDErr error
 }
 
-func (s *stubOpAuthorizer) AuthorizeShare(context.Context, string, int64) (common.Address, *ecdsa.PrivateKey, error) {
+func (s *stubOpAuthorizer) AuthorizeShare(context.Context, string, int64) (common.Address, *ecdsa.PrivateKey, bool, error) {
 	s.calls++
 	if s.err != nil {
-		return common.Address{}, nil, s.err
+		return common.Address{}, nil, false, s.err
 	}
-	return s.owner, s.pk, nil
+	return s.owner, s.pk, s.ownerMode, nil
 }
 
 func (s *stubOpAuthorizer) GranteeClientID(context.Context, string) (common.Address, error) {

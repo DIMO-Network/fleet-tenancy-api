@@ -64,15 +64,20 @@ type RevokeWorker struct {
 	settings   *config.Settings
 	authorizer Authorizer
 	fleet      fleetCaller
+	// owner mirrors ShareWorker.owner: the owner-mode caller, nil when
+	// AA_BUNDLER_URL is unconfigured. A revoke picks its mode exactly the way
+	// the share it ends did — from the live owner.
+	owner OwnerCaller
 }
 
 func NewRevokeWorker(logger *zerolog.Logger, settings *config.Settings,
-	authorizer Authorizer, fleet fleetCaller) *RevokeWorker {
+	authorizer Authorizer, fleet fleetCaller, owner OwnerCaller) *RevokeWorker {
 	return &RevokeWorker{
 		logger:     logger.With().Str("component", "revoke-worker").Logger(),
 		settings:   settings,
 		authorizer: authorizer,
 		fleet:      fleet,
+		owner:      owner,
 	}
 }
 
@@ -114,11 +119,12 @@ func (w *RevokeWorker) Work(ctx context.Context, job *river.Job[RevokeArgs]) err
 	}
 	grantee := common.HexToAddress(args.Grantee)
 
-	owner, signerPK, err := w.authorizer.AuthorizeShare(ctx, args.TenantID, args.TokenID)
+	owner, signerPK, ownerMode, err := w.authorizer.AuthorizeShare(ctx, args.TenantID, args.TokenID)
 	if err != nil {
 		log.Warn().Err(err).Msg("revoke not authorized at execution time")
 		return fmt.Errorf("authorize revoke: %w", err)
 	}
+	log = log.With().Str("mode", shareModeName(ownerMode)).Logger()
 
 	msg, err := BuildSetPermissionsCall(
 		common.HexToAddress(w.settings.SacdAddress),
@@ -131,7 +137,7 @@ func (w *RevokeWorker) Work(ctx context.Context, job *river.Job[RevokeArgs]) err
 		return fmt.Errorf("build setPermissions call: %w", err)
 	}
 
-	result, err := w.fleet.SendCall(ctx, owner, signerPK, msg, true)
+	result, err := sendByMode(ctx, w.fleet, w.owner, owner, signerPK, ownerMode, msg)
 	if err != nil {
 		log.Error().Err(err).Str("owner", owner.Hex()).Msg("revoke UserOp failed")
 		return fmt.Errorf("send revoke UserOp: %w", err)

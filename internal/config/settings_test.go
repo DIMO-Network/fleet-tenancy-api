@@ -173,6 +173,40 @@ func TestSharingConfigured(t *testing.T) {
 	}
 }
 
+// OwnerModeConfigured layers ON TOP of sharing rather than joining its
+// all-or-nothing set: AA_BUNDLER_URL absent means owner mode off with sharing
+// untouched, and AA_BUNDLER_URL present cannot compensate for a missing
+// sharing setting. Deliberately NOT part of validateSharing — the feature is
+// optional the way SACD_UPLOAD_URL is.
+func TestOwnerModeConfigured(t *testing.T) {
+	full := func() *Settings {
+		return &Settings{
+			SacdAddress:         "0x3c152B5d96769661008Ff404224d6530FCAC766d",
+			SyntheticNftAddress: "0x4804e8D1661cd1a1e5dDdE1ff458A7f878c0aC6D",
+			VehicleNftAddress:   "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
+			RPCURL:              mustURL(t, "https://polygon-mainnet.example/v2/key"),
+			BundlerURL:          mustURL(t, "https://rpc.zerodev.app/api/v2/bundler/proj"),
+			AABundlerURL:        mustURL(t, "https://rpc.zerodev.app/api/v3/aa-proj/chain/137"),
+			ChainID:             137,
+		}
+	}
+
+	require.True(t, full().OwnerModeConfigured())
+
+	t.Run("no AA bundler URL turns owner mode off, sharing stays on", func(t *testing.T) {
+		s := full()
+		s.AABundlerURL = url.URL{}
+		assert.False(t, s.OwnerModeConfigured())
+		assert.True(t, s.SharingConfigured())
+	})
+
+	t.Run("an AA URL cannot stand in for a missing sharing setting", func(t *testing.T) {
+		s := full()
+		s.BundlerURL = url.URL{}
+		assert.False(t, s.OwnerModeConfigured())
+	})
+}
+
 // Sharing settings are not boot-required, and stay that way. The service is
 // load-bearing for two apps that fail closed on /v1/authz, so it must keep
 // booting in an environment where sharing is simply off. What Validate does

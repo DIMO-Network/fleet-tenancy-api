@@ -129,12 +129,44 @@ if wrong: a credential row, reversible; nothing reads it yet.
 branches on live owner == effective credential's AA wallet before the
 `MaySignFor` check; the share/revoke workers send owner-mode jobs through a
 `zerodev.Client` (sudo) instead of `fleet.SendCall`; `shareable-owners`
-reports the AA wallet as a positive owner (with a `via` discriminator so
+reports the AA wallet as a positive owner (with an `ownerModeWallet` field so
 callers can distinguish owner from signer) without touching accounts-api or
 `shared_accounts`. Calldata builders are untouched — they are mode-agnostic.
 Same `MaxAttempts: 1`, same job kinds, same status route. Cost if wrong: this
 is the gas-spending step; it ships dark (no tenant has an AA wallet until
 step 3) and the first exercise is step 5's checklist, not user traffic.
+
+Decisions taken while building step 2 (2026-08-31):
+
+- **`AA_BUNDLER_URL` is its own setting**, optional on top of the sharing set
+  (like `SACD_UPLOAD_URL`), because paymaster sponsorship is per-project and
+  the project confirmed to sponsor fresh tenant AA wallets is the one the
+  wallet-creator flow uses — which need not be `BUNDLER_URL`'s. It is the ONE
+  switch for the feature: the authorizer, the display gate (`FilterSignable`,
+  and through it `MaySignFor`) and the workers all read
+  `OwnerModeConfigured()`, so half-configured means off everywhere, never a
+  wrong-validator attempt.
+- **The value lives in ASM, gated by a values flag** (`aaBundlerSecretEnabled`,
+  default false in both values files). The user asked for values
+  configurability, but this repo is PUBLIC and the URL embeds the project id —
+  in git it would hand the sponsorship budget to anyone reading GitHub. The
+  flag in values is the per-environment switch; the URL never appears in git,
+  and the gated remoteRef cannot fail the whole ExternalSecret before the ASM
+  entry exists.
+- **One long-lived owner client** (resolves open question 3): go-zerodev's
+  `Client` binds an account at construction, but `GetUserOperationAndHashToSign`
+  + per-job `GetSmartAccountSigner` + `SendSignedUserOperation` let one client
+  serve every tenant's wallet. The bound account is an ephemeral throwaway key
+  that never signs anything.
+- **The SACD document path carries over unchanged**: `SignSACDDocument`
+  already signs with the `0x01 + ECDSA-validator` identifier envelope, and for
+  an AA wallet that validator's per-kernel owner record is exactly what config
+  time verified.
+- **Typed shared operations refuse owner-mode vehicles** — synchronously at
+  the endpoint (409) and again in the worker — until step 7. Every shared-op
+  path signs through the weighted-ECDSA validator the AA wallet does not have,
+  and the transfer op chains a re-share whose gate assumes the signer
+  arrangement.
 
 **Step 3 — kaufmann proxy + b2b console.** Thin write-through proxies in
 kaufmann (the #197/#200 pattern, no local storage), and a settings section in
@@ -192,18 +224,19 @@ whenever the vehicle's owner is the tenant's AA wallet.
   service that signs arbitrary payloads with a fleet-owning key is an oracle
   for stealing the fleet. Signing operations are enumerated, like shared ops.
 
-## Open questions / pre-flight checks (before step 2 ships)
+## Open questions / pre-flight checks
 
-1. **Paymaster policy.** wallet-creator's sponsored no-op proves *its* ZeroDev
-   project (`cde30207-…`, hardcoded in `index.ts:9`) sponsors fresh senders.
-   Confirm whether prod `BUNDLER_URL` is the same project, and that its policy
-   sponsors UserOps from arbitrary tenant AA wallets — the most likely first
-   failure of step 5.
-2. **Validator storage getter.** Verify the exact read for check 4 against the
-   deployed validator contract (name/ABI), not from memory.
-3. **Client lifecycle.** Whether to cache a `zerodev.Client` per tenant
-   (fingerprinted, like the minter's AuthService cache) or construct per job —
-   measure construction cost first.
+1. ~~**Paymaster policy.**~~ **Resolved 2026-08-31**: the wallet-creator
+   project (`cde30207-…`, `index.ts:9`) is confirmed as the one allowed to
+   sponsor these UserOps. It is configured as `AA_BUNDLER_URL` (see step 2's
+   decisions); write the ASM entry from a file, then flip
+   `aaBundlerSecretEnabled`.
+2. ~~**Validator storage getter.**~~ **Resolved 2026-08-31**: verified against
+   the deployed Polygon contract — `ecdsaValidatorStorage(address)`, selector
+   `0x20709efc`, returns the owner as a 32-byte-padded address; a known kernel
+   answered its root EOA.
+3. ~~**Client lifecycle.**~~ **Resolved 2026-08-31**: one long-lived client,
+   per-job signer — see step 2's decisions.
 4. **Custody call-out for the docs** (not a question, a note): with a
    generated wallet, this service is the sole custodian of a key that owns
    vehicles. There is no rotation story, same as the signer key

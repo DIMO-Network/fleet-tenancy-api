@@ -68,7 +68,7 @@ func (*warmSharedAccountsCmd) Usage() string {
 	and self-serve tenants resolve their fleet from the license's privileged set
 	and have none. Scoping by entitlement would therefore warm nothing at all
 	for exactly the operator tenants this command exists for. The distinct
-	owners in `+"`vehicles`"+` are the superset the gate can be asked about, which is
+	owners in ` + "`vehicles`" + ` are the superset the gate can be asked about, which is
 	what makes a completed run mean something.
 
 	-limit bounds one run for a first pass or a smoke test. It caps the owners
@@ -114,7 +114,7 @@ func (p *warmSharedAccountsCmd) Execute(ctx context.Context, _ *flag.FlagSet, _ 
 		gateway.NewIdentityAPIService(&l, p.settings.IdentityAPIEndpoint))
 	signer := service.NewSharedSignerService(&l,
 		gateway.NewAccountsAPIService(&l, p.settings.AccountsAPIEndpoint), creds,
-		service.NewSharedAccountStore(&store))
+		service.NewSharedAccountStore(&store), &p.settings)
 
 	// The cold set is computed before the limit is applied, not after — and
 	// that ordering is the whole reason -limit is usable more than once. Taking

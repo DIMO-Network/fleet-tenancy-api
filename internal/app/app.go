@@ -114,7 +114,7 @@ func App(settings *config.Settings, logger *zerolog.Logger, commitHash string, p
 	// caller the feature is off, where a 404 would look like a version skew.
 	sharedSignerSvc := service.NewSharedSignerService(logger,
 		gateway.NewAccountsAPIService(logger, settings.AccountsAPIEndpoint), credSvc,
-		service.NewSharedAccountStore(pdb))
+		service.NewSharedAccountStore(pdb), settings)
 	shareAuthorizer := service.NewShareAuthorizer(logger, pdb,
 		gateway.NewIdentityAPIService(logger, settings.IdentityAPIEndpoint),
 		sharedSignerSvc, credSvc, settings)

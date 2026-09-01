@@ -55,9 +55,9 @@ func queueFixture(t *testing.T) *Queue {
 	logger := zerolog.Nop()
 	workers := river.NewWorkers()
 	require.NoError(t, river.AddWorkerSafely(workers,
-		NewShareWorker(&logger, settings, &stubAuthorizer{}, &stubFleet{})))
+		NewShareWorker(&logger, settings, &stubAuthorizer{}, &stubFleet{}, nil)))
 	require.NoError(t, river.AddWorkerSafely(workers,
-		NewRevokeWorker(&logger, settings, &stubAuthorizer{}, &stubFleet{})))
+		NewRevokeWorker(&logger, settings, &stubAuthorizer{}, &stubFleet{}, nil)))
 	require.NoError(t, river.AddWorkerSafely(workers,
 		NewSharedOpWorker(&logger, settings, &stubOpAuthorizer{}, &stubSignerGate{}, &opFleet{})))
 

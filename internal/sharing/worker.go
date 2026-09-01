@@ -61,9 +61,13 @@ func (ShareArgs) InsertOpts() river.InsertOpts {
 // without a database: the implementation lives in internal/service, which owns
 // the entitlement rows and the accounts-api client.
 type Authorizer interface {
-	// AuthorizeShare returns the vehicle's current owner and the tenant's
-	// signer key, or an error if the share must not proceed.
-	AuthorizeShare(ctx context.Context, tenantID string, tokenID int64) (owner common.Address, signerPK *ecdsa.PrivateKey, err error)
+	// AuthorizeShare returns the vehicle's current owner, the key to sign
+	// with, and whether to sign in OWNER MODE — the owner is the tenant's own
+	// AA wallet and the key is its root key, sent through the kernel's sudo
+	// validator — or an error if the share must not proceed. ownerMode false
+	// means the key is the tenant's signer and the op goes through the owner's
+	// secondary weighted-ECDSA validator, as always.
+	AuthorizeShare(ctx context.Context, tenantID string, tokenID int64) (owner common.Address, signerPK *ecdsa.PrivateKey, ownerMode bool, err error)
 }
 
 // fleetCaller is the slice of go-zerodev's fleet client the worker uses, named
@@ -81,7 +85,11 @@ type ShareWorker struct {
 	settings   *config.Settings
 	authorizer Authorizer
 	fleet      fleetCaller
-	now        func() time.Time
+	// owner sends owner-mode UserOps (docs/plans/08-aa-owner-signing.md), nil
+	// when AA_BUNDLER_URL is unconfigured — in which case the authorizer never
+	// selects owner mode and the guard in Work is unreachable belt.
+	owner OwnerCaller
+	now   func() time.Time
 
 	// rpc is used only to read the kernel's EIP-712 domain when signing a
 	// SACD document as the grantor. Dialled lazily and reused: shares are
@@ -107,12 +115,13 @@ func (w *ShareWorker) kernelRPC() (*rpc.Client, error) {
 }
 
 func NewShareWorker(logger *zerolog.Logger, settings *config.Settings,
-	authorizer Authorizer, fleet fleetCaller) *ShareWorker {
+	authorizer Authorizer, fleet fleetCaller, owner OwnerCaller) *ShareWorker {
 	return &ShareWorker{
 		logger:     logger.With().Str("component", "share-worker").Logger(),
 		settings:   settings,
 		authorizer: authorizer,
 		fleet:      fleet,
+		owner:      owner,
 		now:        time.Now,
 	}
 }
@@ -148,7 +157,7 @@ func (w *ShareWorker) Work(ctx context.Context, job *river.Job[ShareArgs]) error
 	}
 	grantee := common.HexToAddress(args.Grantee)
 
-	owner, signerPK, err := w.authorizer.AuthorizeShare(ctx, args.TenantID, args.TokenID)
+	owner, signerPK, ownerMode, err := w.authorizer.AuthorizeShare(ctx, args.TenantID, args.TokenID)
 	if err != nil {
 		// Not wrapped in anything softer: an authorization failure at this
 		// point means the world changed between submit and run — the vehicle
@@ -157,6 +166,7 @@ func (w *ShareWorker) Work(ctx context.Context, job *river.Job[ShareArgs]) error
 		log.Warn().Err(err).Msg("share not authorized at execution time")
 		return fmt.Errorf("authorize share: %w", err)
 	}
+	log = log.With().Str("mode", shareModeName(ownerMode)).Logger()
 
 	expiration := ExpirationFrom(w.now(), time.Duration(args.DurationDays)*24*time.Hour)
 
@@ -178,9 +188,13 @@ func (w *ShareWorker) Work(ctx context.Context, job *river.Job[ShareArgs]) error
 		return fmt.Errorf("build setPermissions call: %w", err)
 	}
 
-	// Sent FROM the owner's kernel account, signed BY the tenant's signer.
-	// That asymmetry is the whole feature: the owner never signs.
-	result, err := w.fleet.SendCall(ctx, owner, signerPK, msg, true)
+	// Signer mode: sent FROM the owner's kernel account, signed BY the
+	// tenant's signer — that asymmetry is the original feature; the owner
+	// never signs. Owner mode: the owner IS the tenant's AA wallet and the
+	// key is its root, so the op goes through the sudo validator instead —
+	// same call, different validator, and mixing the two envelopes is the
+	// failure both callers exist to prevent.
+	result, err := w.send(ctx, owner, signerPK, ownerMode, msg)
 	if err != nil {
 		log.Error().Err(err).Str("owner", owner.Hex()).Msg("share UserOp failed")
 		return fmt.Errorf("send share UserOp: %w", err)
@@ -199,6 +213,37 @@ func (w *ShareWorker) Work(ctx context.Context, job *river.Job[ShareArgs]) error
 	}
 	event.Msg("vehicle share granted on chain")
 	return nil
+}
+
+// shareModeName renders the mode for logs: "owner" or "signer". A word rather
+// than a boolean so the log line reads as the decision it records.
+func shareModeName(ownerMode bool) string {
+	if ownerMode {
+		return "owner"
+	}
+	return "signer"
+}
+
+// send dispatches to the caller the authorized mode requires.
+func (w *ShareWorker) send(ctx context.Context, owner common.Address, pk *ecdsa.PrivateKey,
+	ownerMode bool, msg *ethereum.CallMsg) (*zerodev.UserOperationResult, error) {
+	return sendByMode(ctx, w.fleet, w.owner, owner, pk, ownerMode, msg)
+}
+
+// sendByMode routes one call to the right signing path. The guard exists for a
+// state the authorizer should make unreachable — owner mode selected while the
+// owner client is nil — because the alternative to failing here is signing
+// with the wrong validator and burning the attempt.
+func sendByMode(ctx context.Context, fleet fleetCaller, ownerCli OwnerCaller,
+	owner common.Address, pk *ecdsa.PrivateKey, ownerMode bool,
+	msg *ethereum.CallMsg) (*zerodev.UserOperationResult, error) {
+	if !ownerMode {
+		return fleet.SendCall(ctx, owner, pk, msg, true)
+	}
+	if ownerCli == nil {
+		return nil, ErrOwnerModeNotConfigured
+	}
+	return ownerCli.SendOwnerCall(ctx, owner, pk, msg, true)
 }
 
 // sacdSource publishes the SACD document for a share and returns the

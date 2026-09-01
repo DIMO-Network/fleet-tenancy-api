@@ -94,7 +94,7 @@ func (c *SharingController) ShareVehicle(ctx *fiber.Ctx) error {
 		return err
 	}
 
-	owner, _, err := c.shares.AuthorizeShare(ctx.Context(), tenantID, tokenID)
+	owner, _, _, err := c.shares.AuthorizeShare(ctx.Context(), tenantID, tokenID)
 	if err != nil {
 		return c.shareAuthError(ctx, tenantID, tokenID, err)
 	}
@@ -172,7 +172,7 @@ func (c *SharingController) RevokeShare(ctx *fiber.Ctx) error {
 	// worker re-runs it: this writes to the vehicle's SACD record with the
 	// tenant's signer on the owner's kernel, and standing to do that does not
 	// depend on which direction the write goes.
-	if _, _, err := c.shares.AuthorizeShare(ctx.Context(), tenantID, tokenID); err != nil {
+	if _, _, _, err := c.shares.AuthorizeShare(ctx.Context(), tenantID, tokenID); err != nil {
 		return c.shareAuthError(ctx, tenantID, tokenID, err)
 	}
 
@@ -294,7 +294,7 @@ func (c *SharingController) ShareableOwners(ctx *fiber.Ctx) error {
 		return ctx.JSON(models.ShareableOwnersResult{Owners: []string{}})
 	}
 
-	owners, unresolved, err := c.signer.FilterSignable(ctx.Context(), tenantID, body.Owners)
+	owners, unresolved, ownerModeWallet, err := c.signer.FilterSignable(ctx.Context(), tenantID, body.Owners)
 	if err != nil {
 		// Deliberately not a 200 with a shorter list. An upstream failure that
 		// read as "none of these are shareable" would hide every share button
@@ -306,7 +306,8 @@ func (c *SharingController) ShareableOwners(ctx *fiber.Ctx) error {
 		c.logger.Err(err).Str("tenant_id", tenantID).Msg("resolve shareable owners")
 		return fiber.NewError(fiber.StatusBadGateway, "could not resolve shareable owners")
 	}
-	return ctx.JSON(models.ShareableOwnersResult{Owners: owners, Unresolved: unresolved})
+	return ctx.JSON(models.ShareableOwnersResult{
+		Owners: owners, Unresolved: unresolved, OwnerModeWallet: ownerModeWallet})
 }
 
 func (c *SharingController) assertScope(ctx *fiber.Ctx, tenantID, op string) error {

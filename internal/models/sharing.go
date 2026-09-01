@@ -34,6 +34,16 @@ type ShareableOwnersResult struct {
 	//
 	// Additive: a caller that ignores the field behaves exactly as before.
 	Unresolved []string `json:"unresolved,omitempty"`
+
+	// OwnerModeWallet is the tenant's AA wallet address when one is configured
+	// (docs/plans/08-aa-owner-signing.md) — the owner whose vehicles are shared
+	// in owner mode, with no per-owner authorization to resolve. When it
+	// appears in Owners, that positive came from configuration, not from
+	// accounts-api; a caller can use this to word the affordance differently
+	// ("fleet wallet") without inferring it from address comparison.
+	//
+	// Additive, like Unresolved: a caller that ignores it behaves as before.
+	OwnerModeWallet string `json:"ownerModeWallet,omitempty"`
 }
 
 // ShareVehicleInput is a request to grant a wallet SACD permissions on a

@@ -68,9 +68,16 @@ func (c *SharingController) SharedOperation(ctx *fiber.Ctx) error {
 	// The full authorization chain runs here so the caller gets a synchronous
 	// answer, and again in the worker before the irreversible call. Both are
 	// necessary: this one is for the caller, that one is for correctness.
-	owner, _, err := c.shares.AuthorizeShare(ctx.Context(), tenantID, tokenID)
+	owner, _, ownerMode, err := c.shares.AuthorizeShare(ctx.Context(), tenantID, tokenID)
 	if err != nil {
 		return c.shareAuthError(ctx, tenantID, tokenID, err)
+	}
+	if ownerMode {
+		// Typed shared operations on an AA-wallet-owned vehicle are plan 08
+		// step 7. Refused synchronously — with the reason — rather than
+		// accepted into a job the worker can only fail.
+		return fiber.NewError(fiber.StatusConflict,
+			"this vehicle is owned by the tenant's AA wallet; shared operations on it are not supported yet")
 	}
 
 	switch args.Op {
