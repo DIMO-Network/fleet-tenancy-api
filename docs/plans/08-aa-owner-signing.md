@@ -136,23 +136,19 @@ Same `MaxAttempts: 1`, same job kinds, same status route. Cost if wrong: this
 is the gas-spending step; it ships dark (no tenant has an AA wallet until
 step 3) and the first exercise is step 5's checklist, not user traffic.
 
-Decisions taken while building step 2 (2026-08-31):
+Decisions taken while building step 2 (2026-08-31, revised 2026-09-01):
 
-- **`AA_BUNDLER_URL` is its own setting**, optional on top of the sharing set
-  (like `SACD_UPLOAD_URL`), because paymaster sponsorship is per-project and
-  the project confirmed to sponsor fresh tenant AA wallets is the one the
-  wallet-creator flow uses — which need not be `BUNDLER_URL`'s. It is the ONE
-  switch for the feature: the authorizer, the display gate (`FilterSignable`,
-  and through it `MaySignFor`) and the workers all read
-  `OwnerModeConfigured()`, so half-configured means off everywhere, never a
-  wrong-validator attempt.
-- **The value lives in ASM, gated by a values flag** (`aaBundlerSecretEnabled`,
-  default false in both values files). The user asked for values
-  configurability, but this repo is PUBLIC and the URL embeds the project id —
-  in git it would hand the sponsorship budget to anyone reading GitHub. The
-  flag in values is the per-environment switch; the URL never appears in git,
-  and the gated remoteRef cannot fail the whole ExternalSecret before the ASM
-  entry exists.
+- **Owner mode uses `BUNDLER_URL` — one ZeroDev project for both signing
+  paths.** Sponsorship is per-project and the sponsoring project was confirmed
+  to be this one, so a separate `AA_BUNDLER_URL` would have held the same value
+  twice (built that way first, folded away 2026-09-01). `OwnerModeConfigured()`
+  therefore equals `SharingConfigured()`, kept as its own method because three
+  surfaces consult it — the authorizer, the display gate (`FilterSignable`,
+  and through it `MaySignFor`) and the workers — and a dedicated switch, if
+  ever wanted, is then a one-line change. **The feature's real switch is per
+  tenant: the aa_wallet credential row.** Turning owner mode off means
+  clearing a tenant's wallet (one DELETE), or emptying any sharing setting to
+  turn everything off.
 - **One long-lived owner client** (resolves open question 3): go-zerodev's
   `Client` binds an account at construction, but `GetUserOperationAndHashToSign`
   + per-job `GetSmartAccountSigner` + `SendSignedUserOperation` let one client
@@ -226,11 +222,9 @@ whenever the vehicle's owner is the tenant's AA wallet.
 
 ## Open questions / pre-flight checks
 
-1. ~~**Paymaster policy.**~~ **Resolved 2026-08-31**: the wallet-creator
-   project (`cde30207-…`, `index.ts:9`) is confirmed as the one allowed to
-   sponsor these UserOps. It is configured as `AA_BUNDLER_URL` (see step 2's
-   decisions); write the ASM entry from a file, then flip
-   `aaBundlerSecretEnabled`.
+1. ~~**Paymaster policy.**~~ **Resolved 2026-08-31/09-01**: the sponsoring
+   project is confirmed, and it is the one `BUNDLER_URL` carries — one project
+   for everything, no owner-mode-specific setting (see step 2's decisions).
 2. ~~**Validator storage getter.**~~ **Resolved 2026-08-31**: verified against
    the deployed Polygon contract — `ecdsaValidatorStorage(address)`, selector
    `0x20709efc`, returns the owner as a 32-byte-padded address; a known kernel

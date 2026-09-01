@@ -23,7 +23,7 @@ the row in the same PR that ships the step**, not later.
 | [04-invitations-into-tenancy.md](04-invitations-into-tenancy.md) | P1 deployed, P2 backfilled 2026-08-16; **flag flip outstanding** (`INVITES_FROM_TENANCY` unset in prod) |
 | [06-signer-key-consolidation.md](06-signer-key-consolidation.md) | Steps 1–3 done 2026-08-21 — `differ=0`; provisioning `v0.22.0`; shared-ops endpoint `v0.23.0`, no caller yet; **next is step 4** (kaufmann's three workers), which must first resolve the 15m-job/10m-poll transfer-timeout mismatch recorded in the plan |
 | [07-vehicle-roster.md](07-vehicle-roster.md) | Steps 1–3 done and live; **step 4 done** — both readers cut over and ON in prod (fleet-lite 2026-08-20 14:17, kaufmann `v1.53.0` + flip 20:20 UTC); neither path exercised by real traffic yet; step 5 not started |
-| [08-aa-owner-signing.md](08-aa-owner-signing.md) | **Steps 1–2 built 2026-08-31** (#83, not merged) — credential + config surface with strict on-chain validation, owner mode in the sharing engine behind `AA_BUNDLER_URL` (ships dark; all pre-flights resolved, sponsoring project confirmed). Next: step 3, the kaufmann proxy + b2b console |
+| [08-aa-owner-signing.md](08-aa-owner-signing.md) | **Steps 1–2 built 2026-08-31** (#83, not merged) — credential + config surface with strict on-chain validation, owner mode in the sharing engine (rides the sharing config, one ZeroDev project for both paths; the per-tenant wallet row is the switch; all pre-flights resolved). Next: step 3, the kaufmann proxy + b2b console |
 
 ## Writing one
 

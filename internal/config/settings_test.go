@@ -173,11 +173,11 @@ func TestSharingConfigured(t *testing.T) {
 	}
 }
 
-// OwnerModeConfigured layers ON TOP of sharing rather than joining its
-// all-or-nothing set: AA_BUNDLER_URL absent means owner mode off with sharing
-// untouched, and AA_BUNDLER_URL present cannot compensate for a missing
-// sharing setting. Deliberately NOT part of validateSharing — the feature is
-// optional the way SACD_UPLOAD_URL is.
+// OwnerModeConfigured tracks SharingConfigured exactly — one ZeroDev project
+// carries both signing paths (decided 2026-09-01), so there is no
+// owner-mode-specific setting to half-configure. The per-feature switch is the
+// tenant's aa_wallet credential row, not an env var. The method exists so the
+// three surfaces that consult it keep naming the question they ask.
 func TestOwnerModeConfigured(t *testing.T) {
 	full := func() *Settings {
 		return &Settings{
@@ -186,23 +186,16 @@ func TestOwnerModeConfigured(t *testing.T) {
 			VehicleNftAddress:   "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
 			RPCURL:              mustURL(t, "https://polygon-mainnet.example/v2/key"),
 			BundlerURL:          mustURL(t, "https://rpc.zerodev.app/api/v2/bundler/proj"),
-			AABundlerURL:        mustURL(t, "https://rpc.zerodev.app/api/v3/aa-proj/chain/137"),
 			ChainID:             137,
 		}
 	}
 
 	require.True(t, full().OwnerModeConfigured())
 
-	t.Run("no AA bundler URL turns owner mode off, sharing stays on", func(t *testing.T) {
-		s := full()
-		s.AABundlerURL = url.URL{}
-		assert.False(t, s.OwnerModeConfigured())
-		assert.True(t, s.SharingConfigured())
-	})
-
-	t.Run("an AA URL cannot stand in for a missing sharing setting", func(t *testing.T) {
+	t.Run("owner mode is off exactly when sharing is", func(t *testing.T) {
 		s := full()
 		s.BundlerURL = url.URL{}
+		assert.False(t, s.SharingConfigured())
 		assert.False(t, s.OwnerModeConfigured())
 	})
 }

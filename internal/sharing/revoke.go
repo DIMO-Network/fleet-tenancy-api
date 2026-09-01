@@ -64,9 +64,9 @@ type RevokeWorker struct {
 	settings   *config.Settings
 	authorizer Authorizer
 	fleet      fleetCaller
-	// owner mirrors ShareWorker.owner: the owner-mode caller, nil when
-	// AA_BUNDLER_URL is unconfigured. A revoke picks its mode exactly the way
-	// the share it ends did — from the live owner.
+	// owner mirrors ShareWorker.owner: the owner-mode caller, nil when owner
+	// mode is unconfigured. A revoke picks its mode exactly the way the share
+	// it ends did — from the live owner.
 	owner OwnerCaller
 }
 

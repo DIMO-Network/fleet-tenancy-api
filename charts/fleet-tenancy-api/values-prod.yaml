@@ -1,5 +1,4 @@
 replicaCount: 2
-aaBundlerSecretEnabled: false
 image:
   repository: dimozone/fleet-tenancy-api
   pullPolicy: IfNotPresent

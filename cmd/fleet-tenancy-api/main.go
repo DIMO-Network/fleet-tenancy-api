@@ -186,9 +186,10 @@ func shareWorkers(ctx context.Context, logger *zerolog.Logger, settings *config.
 		logger.Fatal().Err(err).Msg("sharing is configured but its fleet client could not be built")
 	}
 
-	// Owner mode (docs/plans/08-aa-owner-signing.md) is optional on top of
-	// sharing: without AA_BUNDLER_URL the client is nil, the authorizer never
-	// selects the mode, and the workers' guard is unreachable belt.
+	// Owner mode (docs/plans/08-aa-owner-signing.md) rides the sharing config —
+	// same ZeroDev project, so OwnerModeConfigured is true whenever sharing is.
+	// The per-tenant switch is the aa_wallet credential row; with none stored,
+	// this client dials and then never sends.
 	var ownerClient sharing.OwnerCaller
 	if settings.OwnerModeConfigured() {
 		oc, oerr := sharing.NewOwnerClient(settings)

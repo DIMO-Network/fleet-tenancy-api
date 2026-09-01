@@ -14,11 +14,11 @@ import (
 )
 
 // ErrOwnerModeNotConfigured is returned when an owner-mode operation is asked
-// for without AA_BUNDLER_URL. Reachable only through a race or a bug — the
-// authorizer consults OwnerModeConfigured before ever selecting owner mode —
-// but the worker guards anyway, because the alternative is signing with the
-// wrong validator and burning the attempt.
-var ErrOwnerModeNotConfigured = fmt.Errorf("owner-mode signing is not configured (AA_BUNDLER_URL)")
+// for while the sharing settings are absent. Reachable only through a race or
+// a bug — the authorizer consults OwnerModeConfigured before ever selecting
+// owner mode — but the worker guards anyway, because the alternative is
+// signing with the wrong validator and burning the attempt.
+var ErrOwnerModeNotConfigured = fmt.Errorf("owner-mode signing is not configured (sharing settings)")
 
 // OwnerCaller is the owner-mode counterpart of fleetCaller: a UserOperation
 // sent FROM the tenant's own AA wallet, signed with its root key through the
@@ -47,11 +47,12 @@ type OwnerClient struct {
 	cli *zerodev.Client
 }
 
-// NewOwnerClient dials the AA project. The construction key is an ephemeral
-// throwaway: go-zerodev's Client refuses a nil AccountPK because its bound
-// signer needs one, but this client never uses the bound signer — every job
-// brings its own wallet and key. Nothing is ever signed with the ephemeral
-// key, and it goes out of scope here.
+// NewOwnerClient dials the same ZeroDev project the fleet client uses — one
+// project sponsors both signing paths (decided 2026-09-01). The construction
+// key is an ephemeral throwaway: go-zerodev's Client refuses a nil AccountPK
+// because its bound signer needs one, but this client never uses the bound
+// signer — every job brings its own wallet and key. Nothing is ever signed
+// with the ephemeral key, and it goes out of scope here.
 func NewOwnerClient(settings *config.Settings) (*OwnerClient, error) {
 	if !settings.OwnerModeConfigured() {
 		return nil, ErrOwnerModeNotConfigured
@@ -65,8 +66,8 @@ func NewOwnerClient(settings *config.Settings) (*OwnerClient, error) {
 		AccountPK:                  ephemeral,
 		EntryPointVersion:          zerodev.EntryPointVersion07,
 		RpcURL:                     &settings.RPCURL,
-		BundlerURL:                 &settings.AABundlerURL,
-		PaymasterURL:               &settings.AABundlerURL,
+		BundlerURL:                 &settings.BundlerURL,
+		PaymasterURL:               &settings.BundlerURL,
 		ChainID:                    new(big.Int).SetInt64(settings.ChainID),
 		ReceiptPollingDelaySeconds: receiptPollingDelaySeconds,
 		ReceiptPollingRetries:      receiptPollingRetries,

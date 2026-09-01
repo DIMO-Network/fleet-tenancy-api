@@ -26,7 +26,6 @@ func ownerModeSettings() *config.Settings {
 		VehicleNftAddress:   "0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF",
 		RPCURL:              url.URL{Scheme: "https", Host: "rpc.test.invalid"},
 		BundlerURL:          url.URL{Scheme: "https", Host: "bundler.test.invalid"},
-		AABundlerURL:        url.URL{Scheme: "https", Host: "aa.test.invalid"},
 	}
 }
 
@@ -105,15 +104,15 @@ func TestAuthorizeShareOwnerMode(t *testing.T) {
 
 	t.Run("owner mode unconfigured falls through even for the AA wallet's own vehicle", func(t *testing.T) {
 		off := ownerModeSettings()
-		off.AABundlerURL = url.URL{}
+		off.BundlerURL = url.URL{}
 		offSigner := NewSharedSignerService(&logger, &fakeAccounts{}, creds,
 			NewSharedAccountStore(store), off)
 		offAuthorizer := NewShareAuthorizer(&logger, store, identity, offSigner, creds, off)
 
 		_, _, _, aerr := offAuthorizer.AuthorizeShare(ctx, opTenant, tokenID)
 		assert.ErrorIs(t, aerr, ErrSignerNotAuthorized,
-			"without AA_BUNDLER_URL the wallet must not be signed for at all — "+
-				"half-configured means off, never a wrong-validator attempt")
+			"with sharing unconfigured the wallet must not be selected for owner mode — "+
+				"off means off, never a wrong-validator attempt")
 	})
 }
 
@@ -147,7 +146,7 @@ func TestFilterSignableOwnerMode(t *testing.T) {
 
 	t.Run("owner mode unconfigured hides the wallet from the display gate too", func(t *testing.T) {
 		off := ownerModeSettings()
-		off.AABundlerURL = url.URL{}
+		off.BundlerURL = url.URL{}
 		svc, _ := build(off, "")
 		got, _, ownerModeWallet, err := svc.FilterSignable(context.Background(), "t1",
 			[]string{aaWallet.Hex()})

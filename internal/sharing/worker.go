@@ -86,7 +86,7 @@ type ShareWorker struct {
 	authorizer Authorizer
 	fleet      fleetCaller
 	// owner sends owner-mode UserOps (docs/plans/08-aa-owner-signing.md), nil
-	// when AA_BUNDLER_URL is unconfigured — in which case the authorizer never
+	// when owner mode is unconfigured — in which case the authorizer never
 	// selects owner mode and the guard in Work is unreachable belt.
 	owner OwnerCaller
 	now   func() time.Time
