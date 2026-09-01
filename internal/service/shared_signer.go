@@ -495,20 +495,6 @@ func (s *SharedSignerService) lookupSigner(ctx context.Context, owner, token str
 	return account.ProvidedSignerAddress, nil
 }
 
-// tenantSigner is the tenant's effective signer, resolved ONCE per call. The
-// old shape resolved the effective credential inside the per-owner check, so a
-// fleet with three hundred distinct owners resolved it three hundred times.
-func (s *SharedSignerService) tenantSigner(ctx context.Context, tenantID string) (string, error) {
-	cred, err := s.creds.Effective(ctx, tenantID)
-	if err != nil {
-		return "", fmt.Errorf("resolve effective credential for %s: %w", tenantID, err)
-	}
-	if cred.SignerAddress == "" {
-		return "", nil
-	}
-	return common.HexToAddress(cred.SignerAddress).Hex(), nil
-}
-
 func (s *SharedSignerService) check(ctx context.Context, tenantID, ownerAddress string) (bool, error) {
 	if !common.IsHexAddress(ownerAddress) {
 		return false, nil

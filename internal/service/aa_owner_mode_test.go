@@ -121,7 +121,11 @@ func TestAuthorizeShareOwnerMode(t *testing.T) {
 func TestFilterSignableOwnerMode(t *testing.T) {
 	logger := zerolog.Nop()
 	aaWallet := common.HexToAddress("0xBBBB0000000000000000000000000000000000AA")
-	build := func(settings *config.Settings, signerAddr string) (*SharedSignerService, *countingAccounts) {
+	// build takes the SUBTEST's t, not the parent's: testStore skips when no
+	// database is reachable (CI), and a Skip on a parent t from inside a
+	// subtest is a panic, not a skip.
+	build := func(t *testing.T, settings *config.Settings, signerAddr string) (*SharedSignerService, *countingAccounts) {
+		t.Helper()
 		accounts := &countingAccounts{inner: &fakeAccounts{}}
 		creds := &fakeCreds{
 			minted: &models.MintedToken{Token: "jwt", ClientID: "0xclient"},
@@ -133,7 +137,7 @@ func TestFilterSignableOwnerMode(t *testing.T) {
 	}
 
 	t.Run("the AA wallet is positive with no accounts-api call, even signerless", func(t *testing.T) {
-		svc, accounts := build(ownerModeSettings(), "")
+		svc, accounts := build(t, ownerModeSettings(), "")
 		got, unresolved, ownerModeWallet, err := svc.FilterSignable(context.Background(), "t1",
 			[]string{lower(aaWallet.Hex()), ownerWallet})
 		require.NoError(t, err)
@@ -147,7 +151,7 @@ func TestFilterSignableOwnerMode(t *testing.T) {
 	t.Run("owner mode unconfigured hides the wallet from the display gate too", func(t *testing.T) {
 		off := ownerModeSettings()
 		off.BundlerURL = url.URL{}
-		svc, _ := build(off, "")
+		svc, _ := build(t, off, "")
 		got, _, ownerModeWallet, err := svc.FilterSignable(context.Background(), "t1",
 			[]string{aaWallet.Hex()})
 		require.NoError(t, err)
