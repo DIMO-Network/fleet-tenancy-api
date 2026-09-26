@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 	"github.com/rs/zerolog"
 )
 
@@ -89,6 +90,8 @@ func NewQueue(ctx context.Context, logger *zerolog.Logger, settings *config.Sett
 		Queues:               map[string]river.QueueConfig{QueueName: {MaxWorkers: maxWorkers}},
 		Workers:              workers,
 		RescueStuckJobsAfter: rescueStuckJobsAfter,
+		// One vehicle at a time, in queue order: see vehicleSequencer.
+		Middleware: []rivertype.Middleware{newVehicleSequencer(pool, *logger)},
 	})
 	if err != nil {
 		pool.Close()

@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS invitations (
     accepted_at          TIMESTAMPTZ
 );
 
+-- A fresh database already has an invitations table by now: the init
+-- migration was later edited to create one, without the email-tracking
+-- columns, so the CREATE above is skipped and the index below failed on
+-- postmark_message_id ("column does not exist"). Adding the columns
+-- idempotently lets a new environment migrate; where this migration already
+-- ran it never runs again, and where the columns exist this is a no-op.
+ALTER TABLE invitations
+    ADD COLUMN IF NOT EXISTS postmark_message_id TEXT,
+    ADD COLUMN IF NOT EXISTS email_status        TEXT,
+    ADD COLUMN IF NOT EXISTS email_status_at     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS email_status_detail TEXT;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_invitations_token_hash ON invitations (token_hash);
 CREATE INDEX IF NOT EXISTS idx_invitations_tenant_id ON invitations (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_invitations_status ON invitations (status);

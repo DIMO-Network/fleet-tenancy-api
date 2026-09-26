@@ -264,7 +264,10 @@ func TestRenewMembershipNeverBackdates(t *testing.T) {
 		renewed, err := svc.Renew(ctx, custTenant, m.ID,
 			&models.RenewMembershipInput{TermMonths: 1}, opWallet)
 		require.NoError(t, err)
-		assert.Equal(t, models.MembershipActive, renewed.Status,
+		// Not "active": a one-month term ends 28-31 days out, which in a
+		// 30-day month falls inside the 30-day expiring_soon window. What
+		// matters is that the renewal did not land in the past.
+		assert.NotEqual(t, models.MembershipExpired, renewed.Status,
 			"a renewal that landed in the past would leave the vehicle still hidden")
 
 		expires, err := time.Parse(time.RFC3339, renewed.ExpiresAt)
