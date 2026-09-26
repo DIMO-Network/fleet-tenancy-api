@@ -3,15 +3,18 @@ package sharing
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
 	"time"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
+	"github.com/DIMO-Network/go-transactions/contracts/sacd"
 	zerodev "github.com/DIMO-Network/go-zerodev"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/riverqueue/river"
 	"github.com/rs/zerolog"
@@ -77,6 +80,20 @@ type fleetCaller interface {
 		msg *ethereum.CallMsg, waitForReceipt bool) (*zerodev.UserOperationResult, error)
 }
 
+// ErrShareDocumentRequired fails a share that could not publish its SACD
+// document while the grantee may already hold a grant it would overwrite.
+//
+// The text reaches the customer verbatim through the status endpoint, so it
+// says what happened to their existing share — nothing — and what to do.
+var ErrShareDocumentRequired = errors.New("the share's document could not be published, and the grantee " +
+	"may already have a share this would overwrite and strip of document access; nothing was changed — " +
+	"try again shortly")
+
+// errNoUploadURL is the publish failure for an environment with SACD_UPLOAD_URL
+// unset. An error rather than a quiet "" so it takes the same decision as any
+// other publish failure: fine for a new share, fatal for an overwrite.
+var errNoUploadURL = errors.New("no SACD upload URL configured")
+
 // ShareWorker sends the SACD grant.
 type ShareWorker struct {
 	river.WorkerDefaults[ShareArgs]
@@ -91,10 +108,18 @@ type ShareWorker struct {
 	owner OwnerCaller
 	now   func() time.Time
 
-	// rpc is used only to read the kernel's EIP-712 domain when signing a
-	// SACD document as the grantor. Dialled lazily and reused: shares are
-	// infrequent, and a dial per job would be wasteful for a value that never
-	// changes. nil until the first document is signed.
+	// publishSource and readGrant are the two network halves of choosing a
+	// grant's source — publish the SACD document; failing that, read what the
+	// call would overwrite. Fields so tests can substitute them; production
+	// wires them to publishSACDDocument and currentGrant.
+	publishSource func(ctx context.Context, owner, grantee common.Address, tokenID int64,
+		expiration *big.Int, signerPK *ecdsa.PrivateKey) (string, error)
+	readGrant func(ctx context.Context, tokenID int64, grantee common.Address) (sacd.ISacdPermissionRecord, error)
+
+	// rpc reads the kernel's EIP-712 domain when signing a SACD document as
+	// the grantor, and the existing grant when a publish fails. Dialled lazily
+	// and reused: shares are infrequent, and a dial per job would be wasteful.
+	// nil until first needed.
 	rpcMu  sync.Mutex
 	rpcCli *rpc.Client
 }
@@ -108,7 +133,7 @@ func (w *ShareWorker) kernelRPC() (*rpc.Client, error) {
 	}
 	cli, err := rpc.Dial(w.settings.RPCURL.String())
 	if err != nil {
-		return nil, fmt.Errorf("dial RPC for kernel signing: %w", err)
+		return nil, fmt.Errorf("dial RPC: %w", err)
 	}
 	w.rpcCli = cli
 	return cli, nil
@@ -116,7 +141,7 @@ func (w *ShareWorker) kernelRPC() (*rpc.Client, error) {
 
 func NewShareWorker(logger *zerolog.Logger, settings *config.Settings,
 	authorizer Authorizer, fleet fleetCaller, owner OwnerCaller) *ShareWorker {
-	return &ShareWorker{
+	w := &ShareWorker{
 		logger:     logger.With().Str("component", "share-worker").Logger(),
 		settings:   settings,
 		authorizer: authorizer,
@@ -124,6 +149,9 @@ func NewShareWorker(logger *zerolog.Logger, settings *config.Settings,
 		owner:      owner,
 		now:        time.Now,
 	}
+	w.publishSource = w.publishSACDDocument
+	w.readGrant = w.currentGrant
+	return w
 }
 
 // Timeout bounds one attempt above the receipt-polling window (5s × 60 = 5
@@ -173,12 +201,12 @@ func (w *ShareWorker) Work(ctx context.Context, job *river.Job[ShareArgs]) error
 	// Publish the SACD document and point the grant at it. Without this the
 	// grantee gets telemetry and no documents — permission bits say nothing
 	// about the glovebox; the cloudevent agreements in this document do.
-	//
-	// Best-effort on purpose. A failed upload degrades to the empty source we
-	// shipped before, which is a share that works for everything except
-	// documents. Failing the whole job instead would turn an assets.dimo.org
-	// blip into "you cannot share your vehicle at all".
-	source := w.sacdSource(ctx, log, owner, grantee, args.TokenID, expiration, signerPK)
+	// Whether a failed publish may fall back to an empty source depends on
+	// what the call would overwrite; see sacdSource.
+	source, err := w.sacdSource(ctx, log, owner, grantee, args.TokenID, expiration, signerPK)
+	if err != nil {
+		return err
+	}
 
 	msg, err := BuildSetPermissionsCall(
 		common.HexToAddress(w.settings.SacdAddress),
@@ -246,14 +274,29 @@ func sendByMode(ctx context.Context, fleet fleetCaller, ownerCli OwnerCaller,
 	return ownerCli.SendOwnerCall(ctx, owner, pk, msg, true)
 }
 
-// sacdSource publishes the SACD document for a share and returns the
-// `ipfs://<cid>` URI to record on chain, or "" when it cannot.
+// sacdSource returns the `source` to record on chain: the `ipfs://<cid>` of a
+// freshly published SACD document, or "" when publishing failed and an empty
+// source is safe. It returns an error, and the share must not be sent, when
+// publishing failed and an empty source is NOT safe.
 //
-// Every failure path returns "" rather than an error. That is the pre-existing
-// behaviour — a share with no source — so the worst case is the share we shipped
-// yesterday, never a share that does not happen. Each failure is logged at warn
-// with the reason, because a silent slide back to "no documents" is exactly the
-// bug this method exists to fix.
+// setPermissions overwrites the grantee's whole record — mask, expiration and
+// source — so which of those two cases applies turns on what is already there:
+//
+//   - NO LIVE GRANT (a first share, or a re-share after revoke or expiry):
+//     best-effort. The empty source is the share we shipped before documents
+//     existed — telemetry without the glovebox — and failing instead would
+//     turn an assets.dimo.org blip into "you cannot share your vehicle at
+//     all".
+//   - A LIVE GRANT (an upgrade, or any re-share to a current grantee): fail.
+//     An empty source here does not degrade a new share, it erases the
+//     document on an existing one — the grantee silently loses glovebox
+//     access while the customer is told the share succeeded. A failed job
+//     leaves the existing grant untouched and the customer sees the failure.
+//   - THE READ ITSELF FAILED: treated as a live grant. Not knowing is not
+//     permission to overwrite.
+//
+// The chain is only read once publishing has failed, so a normal share costs
+// no extra round trip.
 func (w *ShareWorker) sacdSource(
 	ctx context.Context,
 	log zerolog.Logger,
@@ -261,11 +304,47 @@ func (w *ShareWorker) sacdSource(
 	tokenID int64,
 	expiration *big.Int,
 	signerPK *ecdsa.PrivateKey,
-) string {
+) (string, error) {
+	source, pubErr := w.publishSource(ctx, owner, grantee, tokenID, expiration, signerPK)
+	if pubErr == nil {
+		log.Info().Str("source", source).Msg("SACD document published")
+		return source, nil
+	}
+
+	// Both refusals return the bare sentinel and keep the causes in the log.
+	// The job's error text is served to the customer, and these causes are
+	// RPC and HTTP errors: a transport failure renders as `Post "<url>": ...`,
+	// and the RPC URL carries its API key.
+	rec, readErr := w.readGrant(ctx, tokenID, grantee)
+	if readErr != nil {
+		log.Error().Err(pubErr).AnErr("grant_read_error", readErr).
+			Msg("SACD document not published and the existing grant could not be read; refusing to share")
+		return "", ErrShareDocumentRequired
+	}
+	if GrantIsLive(rec, w.now()) {
+		log.Error().Err(pubErr).Str("existing_source", rec.Source).
+			Msg("SACD document not published; refusing to overwrite a live grant with an empty source")
+		return "", ErrShareDocumentRequired
+	}
+
+	// Warn, not info: a silent slide back to "no documents" is exactly the bug
+	// the document exists to fix, so each one should be visible.
+	log.Warn().Err(pubErr).Msg("SACD document not published; new share proceeds without document access")
+	return "", nil
+}
+
+// publishSACDDocument builds, signs and uploads the share's SACD document and
+// returns the `ipfs://<cid>` URI to record on chain.
+func (w *ShareWorker) publishSACDDocument(
+	ctx context.Context,
+	owner, grantee common.Address,
+	tokenID int64,
+	expiration *big.Int,
+	signerPK *ecdsa.PrivateKey,
+) (string, error) {
 	uploadURL := w.settings.SacdUploadURL
 	if uploadURL == "" {
-		log.Warn().Msg("no SACD upload URL configured; sharing without document access")
-		return ""
+		return "", errNoUploadURL
 	}
 
 	asset := VehicleAssetDID(w.settings.ChainID, common.HexToAddress(w.settings.VehicleNftAddress), tokenID)
@@ -273,24 +352,34 @@ func (w *ShareWorker) sacdSource(
 
 	rpcCli, err := w.kernelRPC()
 	if err != nil {
-		log.Warn().Err(err).Msg("no RPC for kernel signing; sharing without document access")
-		return ""
+		return "", err
 	}
 
 	// Signed as the owner's kernel — the grantor token-exchange verifies
 	// against — using the tenant's registered signer via ERC-1271.
 	signed, err := SignSACDDocument(ctx, rpcCli, doc, owner, signerPK)
 	if err != nil {
-		log.Warn().Err(err).Msg("could not sign SACD document; sharing without document access")
-		return ""
+		return "", fmt.Errorf("sign SACD document: %w", err)
 	}
 
 	cid, err := UploadSACDDocument(ctx, uploadURL, signed)
 	if err != nil {
-		log.Warn().Err(err).Msg("could not upload SACD document; sharing without document access")
-		return ""
+		return "", err
 	}
+	return SourceURI(cid), nil
+}
 
-	log.Info().Str("cid", cid).Str("asset", asset).Msg("SACD document published")
-	return SourceURI(cid)
+// currentGrant reads the grantee's live SACD record over the shared RPC client.
+// The ethclient wrapper is not closed: it closes the rpc.Client underneath,
+// which is shared with document signing.
+func (w *ShareWorker) currentGrant(ctx context.Context, tokenID int64,
+	grantee common.Address) (sacd.ISacdPermissionRecord, error) {
+	rpcCli, err := w.kernelRPC()
+	if err != nil {
+		return sacd.ISacdPermissionRecord{}, err
+	}
+	return ReadCurrentGrant(ctx, ethclient.NewClient(rpcCli),
+		common.HexToAddress(w.settings.SacdAddress),
+		common.HexToAddress(w.settings.VehicleNftAddress),
+		tokenID, grantee)
 }
