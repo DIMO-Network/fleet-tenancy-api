@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/DIMO-Network/fleet-tenancy-api/internal/config"
+	"github.com/DIMO-Network/go-transactions/contracts/sacd"
 	zerodev "github.com/DIMO-Network/go-zerodev"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -92,6 +93,12 @@ func workerFixture(t *testing.T, auth *stubAuthorizer, fleet *stubFleet) *ShareW
 	}
 	w := NewShareWorker(&logger, settings, auth, fleet, nil)
 	w.now = func() time.Time { return time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC) }
+	// No SACD_UPLOAD_URL above, so the real publisher fails every time; the
+	// chain read it then falls back to must not dial. Default: the grantee
+	// has no record, which is a first share.
+	w.readGrant = func(context.Context, int64, common.Address) (sacd.ISacdPermissionRecord, error) {
+		return sacd.ISacdPermissionRecord{}, nil
+	}
 	return w
 }
 
@@ -247,4 +254,160 @@ func TestShareWorker_UsesDefaultPermissionsNotFull(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, full.Data, fleet.msg.Data,
 		"a customer share is the default mask, never the full one")
+}
+
+// liveGrant is the record an upgrade overwrites: unexpired, the default mask,
+// and the document the grantee's glovebox access hangs on.
+func liveGrant() sacd.ISacdPermissionRecord {
+	return sacd.ISacdPermissionRecord{
+		Permissions: DefaultPermissions(),
+		Expiration:  big.NewInt(time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC).Unix()),
+		TemplateId:  big.NewInt(0),
+		Source:      "ipfs://bafyexisting",
+	}
+}
+
+// grantReads stubs readGrant and counts calls, so a test can assert whether
+// the chain was consulted at all.
+type grantReads struct {
+	rec   sacd.ISacdPermissionRecord
+	err   error
+	calls int
+}
+
+func (g *grantReads) read(context.Context, int64, common.Address) (sacd.ISacdPermissionRecord, error) {
+	g.calls++
+	return g.rec, g.err
+}
+
+func publishing(source string, err error) func(context.Context, common.Address, common.Address, int64,
+	*big.Int, *ecdsa.PrivateKey) (string, error) {
+	return func(context.Context, common.Address, common.Address, int64, *big.Int, *ecdsa.PrivateKey) (string, error) {
+		return source, err
+	}
+}
+
+// expectedCall is the calldata a default 365-day share from the fixture sends
+// with the given source.
+func expectedCall(t *testing.T, source string) []byte {
+	t.Helper()
+	want, err := BuildSetPermissionsCall(
+		common.HexToAddress("0x3c152B5d96769661008Ff404224d6530FCAC766d"),
+		common.HexToAddress("0xbA5738a18d83D41847dfFbDC6101d37C69c9B0cF"),
+		42, testGrantee, DefaultPermissions(),
+		ExpirationFrom(time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC), 365*24*time.Hour), source)
+	require.NoError(t, err)
+	return want.Data
+}
+
+// A first share keeps the best-effort behaviour: an assets.dimo.org blip must
+// not turn into "you cannot share your vehicle", so the grant goes out with no
+// source.
+func TestShareWorker_NewShareSurvivesPublishFailureWithEmptySource(t *testing.T) {
+	pk, _ := crypto.GenerateKey()
+	fleet := &stubFleet{result: receipt()}
+	w := workerFixture(t, &stubAuthorizer{owner: testOwner, pk: pk}, fleet)
+	w.publishSource = publishing("", errors.New("SACD upload returned 503"))
+	reads := &grantReads{}
+	w.readGrant = reads.read
+
+	require.NoError(t, w.Work(context.Background(), job(validArgs())))
+
+	assert.Equal(t, 1, reads.calls, "a failed publish must check what it would overwrite")
+	require.Equal(t, 1, fleet.calls)
+	assert.Equal(t, expectedCall(t, ""), fleet.msg.Data)
+}
+
+// THE BUG THIS GUARDS. setPermissions overwrites the whole record, so an
+// upgrade sent with an empty source erases the grantee's document and with it
+// their glovebox — while the customer is told the upgrade worked. The job must
+// fail instead, before anything reaches the bundler.
+func TestShareWorker_RefusesToOverwriteLiveGrantWhenPublishFails(t *testing.T) {
+	pk, _ := crypto.GenerateKey()
+	fleet := &stubFleet{result: receipt()}
+	w := workerFixture(t, &stubAuthorizer{owner: testOwner, pk: pk}, fleet)
+	uploadErr := errors.New("SACD upload returned 503")
+	w.publishSource = publishing("", uploadErr)
+	w.readGrant = (&grantReads{rec: liveGrant()}).read
+
+	err := w.Work(context.Background(), job(validArgs()))
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrShareDocumentRequired)
+	assert.Contains(t, err.Error(), uploadErr.Error(), "the underlying cause stays in the job's error")
+	assert.Zero(t, fleet.calls, "the existing grant must be left untouched")
+}
+
+// The same guard in owner mode: the refusal is decided before the send path
+// is chosen, so neither caller may be reached.
+func TestShareWorker_RefusesToOverwriteLiveGrantInOwnerMode(t *testing.T) {
+	pk, _ := crypto.GenerateKey()
+	fleet := &stubFleet{result: receipt()}
+	ownerCli := &stubOwnerCaller{result: receipt()}
+	logger := zerolog.Nop()
+	w := NewShareWorker(&logger, workerFixture(t, nil, nil).settings,
+		&stubAuthorizer{owner: testOwner, pk: pk, ownerMode: true}, fleet, ownerCli)
+	w.publishSource = publishing("", errNoUploadURL)
+	w.readGrant = (&grantReads{rec: liveGrant()}).read
+
+	err := w.Work(context.Background(), job(validArgs()))
+
+	require.ErrorIs(t, err, ErrShareDocumentRequired)
+	assert.Zero(t, fleet.calls)
+	assert.Zero(t, ownerCli.calls)
+}
+
+// A successful publish is the normal upgrade: the new document replaces the
+// old one, and the chain is not read at all.
+func TestShareWorker_OverwritesLiveGrantWithNewSource(t *testing.T) {
+	pk, _ := crypto.GenerateKey()
+	fleet := &stubFleet{result: receipt()}
+	w := workerFixture(t, &stubAuthorizer{owner: testOwner, pk: pk}, fleet)
+	w.publishSource = publishing("ipfs://bafynew", nil)
+	reads := &grantReads{rec: liveGrant()}
+	w.readGrant = reads.read
+
+	require.NoError(t, w.Work(context.Background(), job(validArgs())))
+
+	assert.Zero(t, reads.calls, "a published document needs no check of what it replaces")
+	require.Equal(t, 1, fleet.calls)
+	assert.Equal(t, expectedCall(t, "ipfs://bafynew"), fleet.msg.Data)
+}
+
+// Not knowing whether a grant exists is not permission to overwrite it: a
+// failed read takes the safe path and fails the job.
+func TestShareWorker_FailsSafeWhenGrantReadFails(t *testing.T) {
+	pk, _ := crypto.GenerateKey()
+	fleet := &stubFleet{result: receipt()}
+	w := workerFixture(t, &stubAuthorizer{owner: testOwner, pk: pk}, fleet)
+	w.publishSource = publishing("", errors.New("SACD upload returned 503"))
+	readErr := errors.New("rpc: connection refused")
+	w.readGrant = (&grantReads{err: readErr}).read
+
+	err := w.Work(context.Background(), job(validArgs()))
+
+	require.ErrorIs(t, err, ErrShareDocumentRequired)
+	assert.Contains(t, err.Error(), readErr.Error())
+	assert.Zero(t, fleet.calls)
+}
+
+// A grant that is revoked or expired has nothing left to lose, so re-sharing
+// to that grantee is a new share and keeps the best-effort path.
+func TestShareWorker_DeadGrantIsTreatedAsNewShare(t *testing.T) {
+	pk, _ := crypto.GenerateKey()
+	for name, rec := range map[string]sacd.ISacdPermissionRecord{
+		"revoked": {Permissions: NoPermissions(), Expiration: RevokedExpiration(), TemplateId: big.NewInt(0)},
+		"expired": {Permissions: DefaultPermissions(), TemplateId: big.NewInt(0), Source: "ipfs://bafyold",
+			Expiration: big.NewInt(time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC).Unix())},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fleet := &stubFleet{result: receipt()}
+			w := workerFixture(t, &stubAuthorizer{owner: testOwner, pk: pk}, fleet)
+			w.publishSource = publishing("", errors.New("SACD upload returned 503"))
+			w.readGrant = (&grantReads{rec: rec}).read
+
+			require.NoError(t, w.Work(context.Background(), job(validArgs())))
+			assert.Equal(t, expectedCall(t, ""), fleet.msg.Data)
+		})
+	}
 }
