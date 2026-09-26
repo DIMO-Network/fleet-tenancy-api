@@ -311,17 +311,20 @@ func (w *ShareWorker) sacdSource(
 		return source, nil
 	}
 
+	// Both refusals return the bare sentinel and keep the causes in the log.
+	// The job's error text is served to the customer, and these causes are
+	// RPC and HTTP errors: a transport failure renders as `Post "<url>": ...`,
+	// and the RPC URL carries its API key.
 	rec, readErr := w.readGrant(ctx, tokenID, grantee)
 	if readErr != nil {
 		log.Error().Err(pubErr).AnErr("grant_read_error", readErr).
 			Msg("SACD document not published and the existing grant could not be read; refusing to share")
-		return "", fmt.Errorf("%w (%v; checking for an existing share failed: %v)",
-			ErrShareDocumentRequired, pubErr, readErr)
+		return "", ErrShareDocumentRequired
 	}
 	if GrantIsLive(rec, w.now()) {
 		log.Error().Err(pubErr).Str("existing_source", rec.Source).
 			Msg("SACD document not published; refusing to overwrite a live grant with an empty source")
-		return "", fmt.Errorf("%w (%v)", ErrShareDocumentRequired, pubErr)
+		return "", ErrShareDocumentRequired
 	}
 
 	// Warn, not info: a silent slide back to "no documents" is exactly the bug

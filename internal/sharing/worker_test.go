@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"fmt"
 	"math/big"
+	"net/url"
 	"testing"
 	"time"
 
@@ -334,7 +336,7 @@ func TestShareWorker_RefusesToOverwriteLiveGrantWhenPublishFails(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrShareDocumentRequired)
-	assert.Contains(t, err.Error(), uploadErr.Error(), "the underlying cause stays in the job's error")
+	assert.NotContains(t, err.Error(), uploadErr.Error(), "causes go to the log, not the customer")
 	assert.Zero(t, fleet.calls, "the existing grant must be left untouched")
 }
 
@@ -381,14 +383,39 @@ func TestShareWorker_FailsSafeWhenGrantReadFails(t *testing.T) {
 	fleet := &stubFleet{result: receipt()}
 	w := workerFixture(t, &stubAuthorizer{owner: testOwner, pk: pk}, fleet)
 	w.publishSource = publishing("", errors.New("SACD upload returned 503"))
-	readErr := errors.New("rpc: connection refused")
-	w.readGrant = (&grantReads{err: readErr}).read
+	w.readGrant = (&grantReads{err: errors.New("rpc: connection refused")}).read
 
 	err := w.Work(context.Background(), job(validArgs()))
 
 	require.ErrorIs(t, err, ErrShareDocumentRequired)
-	assert.Contains(t, err.Error(), readErr.Error())
 	assert.Zero(t, fleet.calls)
+}
+
+// The job's error is served to the customer through the status endpoint, and
+// a failed RPC call renders its URL — API key included. Neither cause may
+// reach the returned error.
+func TestShareWorker_RefusalDoesNotLeakRPCURL(t *testing.T) {
+	const secretURL = "https://polygon-mainnet.example/v2/SECRET-API-KEY"
+	transport := &url.Error{Op: "Post", URL: secretURL, Err: errors.New("dial tcp: i/o timeout")}
+
+	for name, reads := range map[string]*grantReads{
+		"read fails": {err: fmt.Errorf("call currentPermissionRecord: %w", transport)},
+		"live grant": {rec: liveGrant()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pk, _ := crypto.GenerateKey()
+			fleet := &stubFleet{result: receipt()}
+			w := workerFixture(t, &stubAuthorizer{owner: testOwner, pk: pk}, fleet)
+			w.publishSource = publishing("", fmt.Errorf("sign SACD document: %w", transport))
+			w.readGrant = reads.read
+
+			err := w.Work(context.Background(), job(validArgs()))
+
+			require.ErrorIs(t, err, ErrShareDocumentRequired)
+			assert.NotContains(t, err.Error(), "SECRET-API-KEY")
+			assert.Zero(t, fleet.calls)
+		})
+	}
 }
 
 // A grant that is revoked or expired has nothing left to lose, so re-sharing
